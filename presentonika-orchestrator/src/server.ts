@@ -55,6 +55,8 @@ app.get<{ Params: { id: string } }>("/jobs/:id", async (request, reply) => {
   const rawProgress = job.progress;
   const progress = typeof rawProgress === "number" ? rawProgress : 0;
 
+  const returnValue = state === "completed" ? ((job as { returnvalue?: unknown; returnValue?: unknown }).returnvalue ?? (job as { returnvalue?: unknown; returnValue?: unknown }).returnValue ?? null) : null;
+
   return {
     jobId: job.id,
     state,
@@ -63,6 +65,7 @@ app.get<{ Params: { id: string } }>("/jobs/:id", async (request, reply) => {
     processedOn: job.processedOn ?? null,
     finishedOn: job.finishedOn ?? null,
     failedReason: job.failedReason || null,
+    returnValue,
   };
 });
 
