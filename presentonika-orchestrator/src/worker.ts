@@ -51,7 +51,11 @@ const worker = new Worker(
     const fills = buildTestFills(fillKeys);
     const map = await readThemeMap(themeId);
 
-    const variantsStats = applyVariants(doc, map, { presentationId });
+    const variantsStats = applyVariants(doc, map, { presentationId }, {
+      onDropAtOutOfRange: ({ slideIndex, badIndex }) => {
+        jobLogger.warn({ slideIndex, badIndex }, "dropAt index out of range");
+      },
+    });
     const fillsStats = applyFills(doc, fills);
 
     await job.updateProgress(85);
@@ -75,6 +79,7 @@ const worker = new Worker(
         replacedCount: fillsStats.replacedCount,
         missingKeys: fillsStats.missingKeys,
         droppedCount: variantsStats.droppedCount,
+        droppedAtCount: variantsStats.droppedAtCount,
       },
     };
 
@@ -87,6 +92,7 @@ const worker = new Worker(
         slideCount,
         replacedCount: fillsStats.replacedCount,
         droppedCount: variantsStats.droppedCount,
+        droppedAtCount: variantsStats.droppedAtCount,
         outZipPath,
       },
       "job completed"

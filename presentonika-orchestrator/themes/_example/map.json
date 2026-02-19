@@ -1,3 +1,10 @@
 {
-  "description": "Placeholder map file for local development"
+  "slides": {
+    "1": {
+      "variants": {
+        "A": { "dropAt": [2] },
+        "B": { "dropAt": [2] }
+      }
+    }
+  }
 }

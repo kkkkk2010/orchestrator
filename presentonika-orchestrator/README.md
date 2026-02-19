@@ -71,12 +71,37 @@ If job is completed, response includes `returnValue` with:
 - `imageSlots`
 - `slideCount`
 - `assemble.outZipPath`
+- `assemble.droppedAtCount`
 
 ## Этап 3: локальная сборка out.zip
 
+
+### Формат map.json (MVP)
+
+- Номера слайдов в `slides` — **1-based** (`"1"`, `"2"`, ...).
+- Для выбранного варианта можно задать:
+  - `dropAt: number[]` — индексы в `slides[N].elements[]`
+  - `drop: string[]` — удаление по `id`
+- Применение идёт в порядке: `dropAt` -> `drop`.
+
+Пример:
+
+```json
+{
+  "slides": {
+    "1": {
+      "variants": {
+        "A": { "dropAt": [2], "drop": ["id1"] },
+        "B": { "dropAt": [2] }
+      }
+    }
+  }
+}
+```
+
 На этапе 3 worker делает локальную сборку `out.zip`:
 1. читает `template.out.zip` и `doc.json`
-2. применяет `map.json` (вариант A/B по seed) и удаляет `drop` ids
+2. применяет `map.json` (вариант A/B по seed), сначала `dropAt` по индексам `slides[N].elements[]`, затем `drop` по ids (fallback)
 3. заменяет `{{key}}` в тексте на `TEST_<key>`
 4. пишет новый архив в `./out/<jobId>.out.zip`
 
