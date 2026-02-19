@@ -9,6 +9,12 @@ cp .env.example .env
 npm run dev
 ```
 
+## Job retention and status checks
+
+- Completed jobs are retained for about **1 hour** (`removeOnComplete: { age: 3600 }`).
+- Failed jobs are retained for about **24 hours** (`removeOnFail: { age: 86400 }`).
+- For best UX, call `GET /jobs/:id` right after `POST /jobs` and/or use short polling.
+
 ## API examples
 
 ### Health

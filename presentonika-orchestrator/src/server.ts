@@ -31,8 +31,8 @@ app.post("/jobs", async (request, reply) => {
   await getQueue().add("generate", payload, {
     jobId,
     attempts: 1,
-    removeOnComplete: true,
-    removeOnFail: false,
+    removeOnComplete: { age: 3600 },
+    removeOnFail: { age: 86400 },
   });
 
   request.log.info({ jobId }, "job queued");
