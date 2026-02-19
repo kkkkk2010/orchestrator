@@ -70,3 +70,20 @@ If job is completed, response includes `returnValue` with:
 - `fillKeys`
 - `imageSlots`
 - `slideCount`
+- `assemble.outZipPath`
+
+## Этап 3: локальная сборка out.zip
+
+На этапе 3 worker делает локальную сборку `out.zip`:
+1. читает `template.out.zip` и `doc.json`
+2. применяет `map.json` (вариант A/B по seed) и удаляет `drop` ids
+3. заменяет `{{key}}` в тексте на `TEST_<key>`
+4. пишет новый архив в `./out/<jobId>.out.zip`
+
+Готовый файл лежит по пути из `returnValue.assemble.outZipPath` (например `out/p_123_... .out.zip`).
+
+Проверить, что `doc.json` изменился:
+
+```bash
+unzip -p out/<jobId>.out.zip doc.json | head -n 60
+```

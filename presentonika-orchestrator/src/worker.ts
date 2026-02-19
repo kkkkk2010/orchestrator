@@ -2,18 +2,33 @@ import dotenv from "dotenv";
 import { Worker } from "bullmq";
 import { getQueueName, getWorkerRedisConnection } from "./queue";
 import { logger } from "./logger";
-import { assertThemeTemplateExists } from "./themes/themeStore";
+import { assertThemeTemplateExists, readThemeMap } from "./themes/themeStore";
 import { readDocJsonFromTemplateZip } from "./themes/templateZip";
 import { extractFillKeys, extractImageSlots, inferSlideCount } from "./themes/parseDoc";
+import { applyVariants } from "./templates/applyVariants";
+import { applyFills } from "./templates/applyFills";
+import { assembleZip } from "./templates/assembleZip";
 
 dotenv.config();
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 
+const buildTestFills = (fillKeys: string[]): Record<string, string> => {
+  const fills: Record<string, string> = {};
+
+  for (const key of fillKeys) {
+    fills[key] = `TEST_${key}`;
+  }
+
+  return fills;
+};
+
 const worker = new Worker(
   getQueueName(),
   async (job) => {
     const themeId = typeof job.data?.themeId === "string" ? job.data.themeId : "";
+    const presentationId = typeof job.data?.presentationId === "number" ? job.data.presentationId : 0;
+    const jobId = typeof job.id === "string" ? job.id : String(job.id);
     const jobLogger = logger.child({ jobId: job.id, themeId });
 
     jobLogger.info("job started");
@@ -33,12 +48,34 @@ const worker = new Worker(
     const imageSlots = extractImageSlots(doc);
     const slideCount = inferSlideCount(doc);
 
+    const fills = buildTestFills(fillKeys);
+    const map = await readThemeMap(themeId);
+
+    const variantsStats = applyVariants(doc, map, { presentationId });
+    const fillsStats = applyFills(doc, fills);
+
+    await job.updateProgress(85);
+    jobLogger.info({ stage: "assemble_zip" }, "progress updated");
+
+    const updatedDocJsonString = JSON.stringify(doc, null, 2);
+    const outZipPath = await assembleZip({
+      templateZipPath: templatePath,
+      jobId,
+      updatedDocJsonString,
+    });
+
     const result = {
       ok: true,
       themeId,
+      slideCount,
       fillKeys,
       imageSlots,
-      slideCount,
+      assemble: {
+        outZipPath,
+        replacedCount: fillsStats.replacedCount,
+        missingKeys: fillsStats.missingKeys,
+        droppedCount: variantsStats.droppedCount,
+      },
     };
 
     await job.updateProgress(100);
@@ -48,6 +85,9 @@ const worker = new Worker(
         fillKeysCount: fillKeys.length,
         imageSlotsCount: imageSlots.length,
         slideCount,
+        replacedCount: fillsStats.replacedCount,
+        droppedCount: variantsStats.droppedCount,
+        outZipPath,
       },
       "job completed"
     );

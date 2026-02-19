@@ -13,6 +13,10 @@ export const getThemeTemplateZipPath = (themeId: string): string => {
   return path.resolve(getThemeDir(themeId), "template.out.zip");
 };
 
+export const getThemeMapPath = (themeId: string): string => {
+  return path.resolve(getThemeDir(themeId), "map.json");
+};
+
 export const assertThemeTemplateExists = async (themeId: string): Promise<string> => {
   const templatePath = getThemeTemplateZipPath(themeId);
 
@@ -23,4 +27,15 @@ export const assertThemeTemplateExists = async (themeId: string): Promise<string
   }
 
   return templatePath;
+};
+
+export const readThemeMap = async (themeId: string): Promise<unknown> => {
+  const mapPath = getThemeMapPath(themeId);
+
+  try {
+    const rawMap = await fs.readFile(mapPath, "utf8");
+    return JSON.parse(rawMap) as unknown;
+  } catch {
+    return {};
+  }
 };
