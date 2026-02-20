@@ -10,6 +10,13 @@ type AssembleZipInput = {
   templateZipPath: string;
   jobId: string;
   updatedDocJsonString: string;
+  replacements?: Record<string, string>;
+};
+
+export type AssembleZipResult = {
+  outZipPath: string;
+  replacedEntryPaths: string[];
+  missingEntryPaths: string[];
 };
 
 const openZip = (zipPath: string): Promise<yauzl.ZipFile> => {
@@ -40,7 +47,8 @@ export const assembleZip = async ({
   templateZipPath,
   jobId,
   updatedDocJsonString,
-}: AssembleZipInput): Promise<string> => {
+  replacements = {},
+}: AssembleZipInput): Promise<AssembleZipResult> => {
   const outDirPath = path.resolve(OUT_DIR);
   await fsPromises.mkdir(outDirPath, { recursive: true });
 
@@ -48,13 +56,16 @@ export const assembleZip = async ({
   const outRelativePath = path.join(OUT_DIR, outFileName);
   const outAbsolutePath = path.resolve(outRelativePath);
 
+  const replacementEntries = new Set(Object.keys(replacements));
+  const replacedEntryPaths = new Set<string>();
+
   const zipFile = await openZip(templateZipPath);
   const zipWriter = new yazl.ZipFile();
   const outputStream = fs.createWriteStream(outAbsolutePath);
 
   zipWriter.outputStream.pipe(outputStream);
 
-  return new Promise<string>((resolve, reject) => {
+  return new Promise<AssembleZipResult>((resolve, reject) => {
     let settled = false;
     let foundDocJson = false;
 
@@ -73,7 +84,14 @@ export const assembleZip = async ({
         return;
       }
       settled = true;
-      resolve(outRelativePath);
+
+      const missingEntryPaths = [...replacementEntries].filter((entryPath) => !replacedEntryPaths.has(entryPath));
+
+      resolve({
+        outZipPath: outRelativePath,
+        replacedEntryPaths: [...replacedEntryPaths],
+        missingEntryPaths,
+      });
     };
 
     outputStream.on("error", (error) => fail(error instanceof Error ? error : new Error(String(error))));
@@ -95,6 +113,14 @@ export const assembleZip = async ({
         if (entry.fileName === "doc.json") {
           foundDocJson = true;
           zipWriter.addBuffer(Buffer.from(updatedDocJsonString, "utf8"), "doc.json");
+          zipFile.readEntry();
+          return;
+        }
+
+        const replacementFilePath = replacements[entry.fileName];
+        if (replacementFilePath) {
+          zipWriter.addFile(replacementFilePath, entry.fileName);
+          replacedEntryPaths.add(entry.fileName);
           zipFile.readEntry();
           return;
         }

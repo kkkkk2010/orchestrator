@@ -1,6 +1,9 @@
 {
   "slides": {
     "1": {
+      "imageAt": {
+        "2": "s1_hero"
+      },
       "variants": {
         "A": { "dropAt": [2] },
         "B": { "dropAt": [2] }

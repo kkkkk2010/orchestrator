@@ -72,6 +72,9 @@ If job is completed, response includes `returnValue` with:
 - `slideCount`
 - `assemble.outZipPath`
 - `assemble.droppedAtCount`
+- `assemble.imagePlannedCount`
+- `assemble.imageReplacedCount`
+- `assemble.imageMissing`
 
 ## Этап 3: локальная сборка out.zip
 
@@ -82,7 +85,10 @@ If job is completed, response includes `returnValue` with:
 - Для выбранного варианта можно задать:
   - `dropAt: number[]` — индексы в `slides[N].elements[]`
   - `drop: string[]` — удаление по `id`
-- Применение идёт в порядке: `dropAt` -> `drop`.
+- Для замены картинок без изменения `src` можно задать:
+  - `imageAt: { "<elementIndex>": "<slotName>" }`
+  - где `elementIndex` — **0-based** индекс в `slides[N].elements[]`
+- Применение: `dropAt` -> `drop` -> image replacement через `imageAt`.
 
 Пример:
 
@@ -90,6 +96,7 @@ If job is completed, response includes `returnValue` with:
 {
   "slides": {
     "1": {
+      "imageAt": { "2": "s1_hero" },
       "variants": {
         "A": { "dropAt": [2], "drop": ["id1"] },
         "B": { "dropAt": [2] }
@@ -103,7 +110,8 @@ If job is completed, response includes `returnValue` with:
 1. читает `template.out.zip` и `doc.json`
 2. применяет `map.json` (вариант A/B по seed), сначала `dropAt` по индексам `slides[N].elements[]`, затем `drop` по ids (fallback)
 3. заменяет `{{key}}` в тексте на `TEST_<key>`
-4. пишет новый архив в `./out/<jobId>.out.zip`
+4. готовит image replacement по `imageAt` и подменяет zip entries (без изменения `src` в `doc.json`)
+5. пишет новый архив в `./out/<jobId>.out.zip`
 
 Готовый файл лежит по пути из `returnValue.assemble.outZipPath` (например `out/p_123_... .out.zip`).
 
@@ -112,3 +120,14 @@ If job is completed, response includes `returnValue` with:
 ```bash
 unzip -p out/<jobId>.out.zip doc.json | head -n 60
 ```
+
+### Проверка imageAt замены
+
+Можно сравнить размер/байты файла изображения внутри собранного архива и тестового файла из theme pack:
+
+```bash
+unzip -p out/<jobId>.out.zip assets/images/slide-1-img-1.png | wc -c
+wc -c themes/_example/test-images/hero.jpg
+```
+
+Если `imageAt` настроен на этот `src`, размер должен совпасть (или как минимум измениться относительно исходного template zip).

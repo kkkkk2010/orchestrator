@@ -2,16 +2,18 @@ import dotenv from "dotenv";
 import { Worker } from "bullmq";
 import { getQueueName, getWorkerRedisConnection } from "./queue";
 import { logger } from "./logger";
-import { assertThemeTemplateExists, readThemeMap } from "./themes/themeStore";
+import { assertThemeTemplateExists, getThemeDir, readThemeMap } from "./themes/themeStore";
 import { readDocJsonFromTemplateZip } from "./themes/templateZip";
 import { extractFillKeys, extractImageSlots, inferSlideCount } from "./themes/parseDoc";
 import { applyVariants } from "./templates/applyVariants";
 import { applyFills } from "./templates/applyFills";
 import { assembleZip } from "./templates/assembleZip";
+import { planImageReplacements } from "./images/planImageReplacements";
 
 dotenv.config();
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
+const IMAGE_MISSING_LIMIT = 50;
 
 const buildTestFills = (fillKeys: string[]): Record<string, string> => {
   const fills: Record<string, string> = {};
@@ -35,6 +37,7 @@ const worker = new Worker(
 
     await job.updateProgress(10);
     jobLogger.info({ stage: "load_theme_pack" }, "progress updated");
+    const themeDir = getThemeDir(themeId);
     const templatePath = await assertThemeTemplateExists(themeId);
 
     await job.updateProgress(30);
@@ -51,6 +54,9 @@ const worker = new Worker(
     const fills = buildTestFills(fillKeys);
     const map = await readThemeMap(themeId);
 
+    await job.updateProgress(75);
+    jobLogger.info({ stage: "apply_variants_fills" }, "progress updated");
+
     const variantsStats = applyVariants(doc, map, { presentationId }, {
       onDropAtOutOfRange: ({ slideIndex, badIndex }) => {
         jobLogger.warn({ slideIndex, badIndex }, "dropAt index out of range");
@@ -58,15 +64,54 @@ const worker = new Worker(
     });
     const fillsStats = applyFills(doc, fills);
 
-    await job.updateProgress(85);
+    await job.updateProgress(80);
+    jobLogger.info({ stage: "prepare_images" }, "progress updated");
+
+    const imagePlan = await planImageReplacements({ doc, map, themeDir });
+    for (const missingItem of imagePlan.missing) {
+      jobLogger.warn(
+        {
+          slideIndex: missingItem.slide,
+          elementIndex: missingItem.element,
+          slotName: missingItem.slot,
+          reason: missingItem.reason,
+        },
+        "image replacement skipped"
+      );
+    }
+
+    await job.updateProgress(90);
     jobLogger.info({ stage: "assemble_zip" }, "progress updated");
 
     const updatedDocJsonString = JSON.stringify(doc, null, 2);
-    const outZipPath = await assembleZip({
+    const assembled = await assembleZip({
       templateZipPath: templatePath,
       jobId,
       updatedDocJsonString,
+      replacements: imagePlan.replacements,
     });
+
+    const imageMissing = [...imagePlan.missing];
+    for (const missingEntryPath of assembled.missingEntryPaths) {
+      const missingItem = {
+        slide: 0,
+        element: -1,
+        slot: missingEntryPath,
+        reason: "zip_entry_not_found",
+      };
+      imageMissing.push(missingItem);
+      jobLogger.warn(
+        {
+          slideIndex: missingItem.slide,
+          elementIndex: missingItem.element,
+          slotName: missingItem.slot,
+          reason: missingItem.reason,
+        },
+        "image replacement skipped"
+      );
+    }
+
+    const imageMissingCapped = imageMissing.slice(0, IMAGE_MISSING_LIMIT);
 
     const result = {
       ok: true,
@@ -75,11 +120,14 @@ const worker = new Worker(
       fillKeys,
       imageSlots,
       assemble: {
-        outZipPath,
+        outZipPath: assembled.outZipPath,
         replacedCount: fillsStats.replacedCount,
         missingKeys: fillsStats.missingKeys,
         droppedCount: variantsStats.droppedCount,
         droppedAtCount: variantsStats.droppedAtCount,
+        imagePlannedCount: imagePlan.plannedCount,
+        imageReplacedCount: assembled.replacedEntryPaths.length,
+        imageMissing: imageMissingCapped,
       },
     };
 
@@ -93,7 +141,10 @@ const worker = new Worker(
         replacedCount: fillsStats.replacedCount,
         droppedCount: variantsStats.droppedCount,
         droppedAtCount: variantsStats.droppedAtCount,
-        outZipPath,
+        imagePlannedCount: imagePlan.plannedCount,
+        imageReplacedCount: assembled.replacedEntryPaths.length,
+        imageMissingCount: imageMissing.length,
+        outZipPath: assembled.outZipPath,
       },
       "job completed"
     );
