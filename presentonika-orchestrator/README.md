@@ -75,6 +75,9 @@ If job is completed, response includes `returnValue` with:
 - `assemble.imagePlannedCount`
 - `assemble.imageReplacedCount`
 - `assemble.imageMissing`
+- `assemble.backgroundsPlannedCount`
+- `assemble.backgroundsReplacedCount`
+- `assemble.backgroundsMissing`
 
 ## Этап 3: локальная сборка out.zip
 
@@ -131,3 +134,23 @@ wc -c themes/_example/test-images/hero.jpg
 ```
 
 Если `imageAt` настроен на этот `src`, размер должен совпасть (или как минимум измениться относительно исходного template zip).
+
+## Этап 5: генерация фонов по слайдам
+
+При сборке worker автоматически генерирует PNG-фоны `backgrounds/slide-N.png` (1536x864) для каждого слайда и подменяет/добавляет их в `out.zip`.
+
+Источник параметров:
+- `themes/<themeId>/theme.json` (если есть)
+- иначе применяются дефолты палитры и интенсивности
+
+Временные файлы фонов создаются в `.tmp/<jobId>/backgrounds/`, после чего используются как replacements при сборке zip.
+
+Проверка:
+
+```bash
+unzip -l out/<jobId>.out.zip | rg "backgrounds/slide-"
+unzip -p out/<jobId>.out.zip backgrounds/slide-1.png | wc -c
+unzip -p out/<jobId>.out.zip backgrounds/slide-2.png | wc -c
+```
+
+Файлы должны существовать, и обычно фоновые PNG для разных слайдов будут отличаться.

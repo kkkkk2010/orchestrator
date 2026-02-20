@@ -133,12 +133,33 @@ export const assembleZip = async ({
       }
     });
 
+    const addMissingBackgroundEntries = (): void => {
+      for (const entryPath of replacementEntries) {
+        if (replacedEntryPaths.has(entryPath)) {
+          continue;
+        }
+
+        if (!entryPath.startsWith("backgrounds/")) {
+          continue;
+        }
+
+        const replacementFilePath = replacements[entryPath];
+        if (!replacementFilePath) {
+          continue;
+        }
+
+        zipWriter.addFile(replacementFilePath, entryPath);
+        replacedEntryPaths.add(entryPath);
+      }
+    };
+
     zipFile.on("end", () => {
       if (!foundDocJson) {
         fail(new Error("TemplateInvalid: missing doc.json"));
         return;
       }
 
+      addMissingBackgroundEntries();
       zipWriter.end();
       zipFile.close();
     });

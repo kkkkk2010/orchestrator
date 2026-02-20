@@ -2,18 +2,21 @@ import dotenv from "dotenv";
 import { Worker } from "bullmq";
 import { getQueueName, getWorkerRedisConnection } from "./queue";
 import { logger } from "./logger";
-import { assertThemeTemplateExists, getThemeDir, readThemeMap } from "./themes/themeStore";
+import { assertThemeTemplateExists, getThemeDir, readThemeMap, readThemeSafe } from "./themes/themeStore";
 import { readDocJsonFromTemplateZip } from "./themes/templateZip";
 import { extractFillKeys, extractImageSlots, inferSlideCount } from "./themes/parseDoc";
 import { applyVariants } from "./templates/applyVariants";
 import { applyFills } from "./templates/applyFills";
 import { assembleZip } from "./templates/assembleZip";
 import { planImageReplacements } from "./images/planImageReplacements";
+import { generateBackgrounds } from "./backgrounds/generateBackgrounds";
+import { normalizeBackgroundTheme } from "./backgrounds/theme";
 
 dotenv.config();
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
+const BACKGROUND_MISSING_LIMIT = 50;
 
 const buildTestFills = (fillKeys: string[]): Record<string, string> => {
   const fills: Record<string, string> = {};
@@ -80,6 +83,29 @@ const worker = new Worker(
       );
     }
 
+    await job.updateProgress(85);
+    jobLogger.info({ stage: "generate_backgrounds" }, "progress updated");
+
+    const theme = await readThemeSafe(themeId);
+    const backgroundTheme = normalizeBackgroundTheme(theme);
+    const backgrounds = await generateBackgrounds({
+      jobId,
+      presentationId,
+      slideCount,
+      theme: backgroundTheme,
+    });
+
+    for (const missingBackground of backgrounds.missing) {
+      jobLogger.warn(
+        {
+          slideIndex: missingBackground.slide,
+          path: missingBackground.path,
+          reason: missingBackground.reason,
+        },
+        "background generation skipped"
+      );
+    }
+
     await job.updateProgress(90);
     jobLogger.info({ stage: "assemble_zip" }, "progress updated");
 
@@ -88,11 +114,18 @@ const worker = new Worker(
       templateZipPath: templatePath,
       jobId,
       updatedDocJsonString,
-      replacements: imagePlan.replacements,
+      replacements: {
+        ...imagePlan.replacements,
+        ...backgrounds.replacements,
+      },
     });
 
     const imageMissing = [...imagePlan.missing];
     for (const missingEntryPath of assembled.missingEntryPaths) {
+      if (missingEntryPath.startsWith("backgrounds/")) {
+        continue;
+      }
+
       const missingItem = {
         slide: 0,
         element: -1,
@@ -111,7 +144,26 @@ const worker = new Worker(
       );
     }
 
+    const backgroundsMissing = [...backgrounds.missing];
+    for (const missingEntryPath of assembled.missingEntryPaths) {
+      if (!missingEntryPath.startsWith("backgrounds/")) {
+        continue;
+      }
+
+      const match = missingEntryPath.match(/slide-(\d+)\.png$/);
+      const slide = match ? Number.parseInt(match[1], 10) : 0;
+      const missingItem = {
+        slide,
+        path: missingEntryPath,
+        reason: "zip_entry_not_found",
+      };
+      backgroundsMissing.push(missingItem);
+      jobLogger.warn({ slideIndex: slide, path: missingEntryPath, reason: missingItem.reason }, "background replacement skipped");
+    }
+
     const imageMissingCapped = imageMissing.slice(0, IMAGE_MISSING_LIMIT);
+    const backgroundsMissingCapped = backgroundsMissing.slice(0, BACKGROUND_MISSING_LIMIT);
+    const backgroundsReplacedCount = assembled.replacedEntryPaths.filter((entryPath) => entryPath.startsWith("backgrounds/")).length;
 
     const result = {
       ok: true,
@@ -126,8 +178,11 @@ const worker = new Worker(
         droppedCount: variantsStats.droppedCount,
         droppedAtCount: variantsStats.droppedAtCount,
         imagePlannedCount: imagePlan.plannedCount,
-        imageReplacedCount: assembled.replacedEntryPaths.length,
+        imageReplacedCount: assembled.replacedEntryPaths.filter((entryPath) => !entryPath.startsWith("backgrounds/")).length,
         imageMissing: imageMissingCapped,
+        backgroundsPlannedCount: slideCount,
+        backgroundsReplacedCount,
+        backgroundsMissing: backgroundsMissingCapped,
       },
     };
 
@@ -142,8 +197,11 @@ const worker = new Worker(
         droppedCount: variantsStats.droppedCount,
         droppedAtCount: variantsStats.droppedAtCount,
         imagePlannedCount: imagePlan.plannedCount,
-        imageReplacedCount: assembled.replacedEntryPaths.length,
+        imageReplacedCount: result.assemble.imageReplacedCount,
         imageMissingCount: imageMissing.length,
+        backgroundsPlannedCount: slideCount,
+        backgroundsReplacedCount,
+        backgroundsMissingCount: backgroundsMissing.length,
         outZipPath: assembled.outZipPath,
       },
       "job completed"
