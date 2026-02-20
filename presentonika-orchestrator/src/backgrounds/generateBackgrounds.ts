@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { PNG } from "pngjs";
 import { BackgroundTheme } from "./theme";
-import { clamp8, mixRgb } from "./color";
+import { clamp8, lerp, mixRgb } from "./color";
 import { fnv1a32, mulberry32 } from "./prng";
 
 const WIDTH = 1536;
@@ -22,6 +22,10 @@ export type BackgroundGenerationResult = {
   missing: BackgroundMissing[];
 };
 
+const clamp01 = (value: number): number => {
+  return Math.max(0, Math.min(1, value));
+};
+
 const blobContribution = (
   x: number,
   y: number,
@@ -33,7 +37,7 @@ const blobContribution = (
   const dx = x - centerX;
   const dy = y - centerY;
   const exponent = -((dx * dx + dy * dy) / (2 * sigma * sigma));
-  return Math.exp(exponent) * alpha;
+  return Math.min(1, Math.exp(exponent) * alpha * 1.15);
 };
 
 const generateBackgroundPng = async (filePath: string, seedKey: string, theme: BackgroundTheme): Promise<void> => {
@@ -49,8 +53,9 @@ const generateBackgroundPng = async (filePath: string, seedKey: string, theme: B
     const centerX = random() * WIDTH;
     const centerY = random() * HEIGHT;
     const sigma = 260 + random() * 260;
-    const alpha = 0.1 + random() * 0.12;
-    const useAccent = random() > 0.35;
+    const alpha = lerp(theme.background.blobAlphaMin, theme.background.blobAlphaMax, random());
+    const useAccent = random() < theme.background.accentBlobChance;
+
     return {
       centerX,
       centerY,
@@ -61,11 +66,15 @@ const generateBackgroundPng = async (filePath: string, seedKey: string, theme: B
   });
 
   const grainAmount = theme.background.grain * 20;
+  const centerX = WIDTH / 2;
+  const centerY = HEIGHT / 2;
+  const maxDist = Math.sqrt(centerX * centerX + centerY * centerY);
 
   for (let y = 0; y < HEIGHT; y += 1) {
     for (let x = 0; x < WIDTH; x += 1) {
       const tRaw = ((x * dirX) + (y * dirY)) / ((WIDTH * Math.abs(dirX)) + (HEIGHT * Math.abs(dirY)));
-      const t = Math.max(0, Math.min(1, tRaw));
+      const tLinear = clamp01(tRaw);
+      const t = Math.pow(tLinear, 1 / theme.background.gradientStrength);
       const base = mixRgb(theme.palette.bg1, theme.palette.bg2, t);
 
       let r = base.r;
@@ -78,6 +87,14 @@ const generateBackgroundPng = async (filePath: string, seedKey: string, theme: B
         g += (blob.color.g - g) * influence;
         b += (blob.color.b - b) * influence;
       }
+
+      const dx = x - centerX;
+      const dy = y - centerY;
+      const distNorm = clamp01(Math.sqrt(dx * dx + dy * dy) / maxDist);
+      const vignette = 1 - theme.background.vignette * Math.pow(distNorm, 1.6);
+      r *= vignette;
+      g *= vignette;
+      b *= vignette;
 
       if (grainAmount > 0) {
         const grain = (random() * 2 - 1) * grainAmount;

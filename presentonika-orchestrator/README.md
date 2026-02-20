@@ -143,6 +143,24 @@ wc -c themes/_example/test-images/hero.jpg
 - `themes/<themeId>/theme.json` (если есть)
 - иначе применяются дефолты палитры и интенсивности
 
+
+Параметры выразительности (`theme.json -> background`):
+- `gradientStrength` (default `1.35`, clamp `0.8..2.5`) — усиливает контраст градиента
+- `blobAlphaMin` / `blobAlphaMax` (default `0.18/0.32`, clamp `0..0.6`) — насыщенность blobs
+- `vignette` (default `0.18`, clamp `0..0.35`) — затемнение краёв
+- `accentBlobChance` (default `0.6`, clamp `0..1`) — как часто blob берёт accent-цвет
+- `grain` (default `0.10`, clamp `0..0.3`) — уровень зерна
+
+Как сделать фон сильнее:
+- увеличьте `gradientStrength` до `1.5..1.9`
+- увеличьте `blobAlphaMin/Max` (например `0.24/0.40`)
+- увеличьте `vignette` до `0.22..0.30`
+
+Как сделать фон мягче:
+- уменьшите `gradientStrength` ближе к `1.0`
+- уменьшите `blobAlphaMin/Max`
+- уменьшите `vignette` до `0.08..0.15`
+
 Временные файлы фонов создаются в `.tmp/<jobId>/backgrounds/`, после чего используются как replacements при сборке zip.
 
 Проверка:

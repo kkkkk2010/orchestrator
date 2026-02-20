@@ -1,5 +1,19 @@
 {
   "id": "_example",
   "name": "Example Theme Pack",
-  "version": 1
+  "version": 1,
+  "palette": {
+    "bg1": "#050B1A",
+    "bg2": "#4A1FA8",
+    "accent": "#FF4DB8"
+  },
+  "background": {
+    "blobs": 3,
+    "grain": 0.14,
+    "gradientStrength": 1.45,
+    "blobAlphaMin": 0.2,
+    "blobAlphaMax": 0.36,
+    "vignette": 0.22,
+    "accentBlobChance": 0.65
+  }
 }
