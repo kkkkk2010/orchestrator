@@ -1,6 +1,8 @@
 import dotenv from "dotenv";
+import path from "node:path";
+import fs from "node:fs/promises";
 import { Worker } from "bullmq";
-import { getQueueName, getWorkerRedisConnection } from "./queue";
+import { getQueueName, getQueueRedisConnection, getWorkerRedisConnection } from "./queue";
 import { logger } from "./logger";
 import { assertThemeTemplateExists, getThemeDir, readThemeMap, readThemeSafe } from "./themes/themeStore";
 import { readDocJsonFromTemplateZip } from "./themes/templateZip";
@@ -12,6 +14,8 @@ import { planImageReplacements } from "./images/planImageReplacements";
 import { generateBackgrounds } from "./backgrounds/generateBackgrounds";
 import { normalizeBackgroundTheme } from "./backgrounds/theme";
 import { uploadOutzip } from "./wp/uploadOutzip";
+import { saveOutzipFromUrl } from "./wp/saveOutzipFromUrl";
+import { buildStagedUrl, createStagedFile, deleteStagedRecord } from "./staged/stagedStore";
 
 dotenv.config();
 
@@ -22,6 +26,11 @@ const UPLOAD_TEXT_LIMIT = 500;
 const WP_UPLOAD_TIMEOUT_MS = parseInt(process.env.WP_UPLOAD_TIMEOUT_MS || "20000", 10);
 const WP_UPLOAD_ENABLED = process.env.WP_UPLOAD_ENABLED === "true";
 const WP_FAIL_ON_UPLOAD_ERROR = process.env.WP_FAIL_ON_UPLOAD_ERROR !== "false";
+const WP_SAVE_MODE = (process.env.WP_SAVE_MODE || "from_url").toLowerCase();
+const WP_SAVE_FROM_URL_TIMEOUT_MS = parseInt(process.env.WP_SAVE_FROM_URL_TIMEOUT_MS || "30000", 10);
+const PUBLIC_ZIP_BASE_URL = process.env.PUBLIC_ZIP_BASE_URL || "http://localhost:8080";
+const STAGED_DIR_ABS = path.resolve(process.env.STAGED_DIR || ".staged");
+const STAGED_TTL_SECONDS = parseInt(process.env.STAGED_TTL_SECONDS || "1800", 10);
 
 const buildTestFills = (fillKeys: string[]): Record<string, string> => {
   const fills: Record<string, string> = {};
@@ -171,49 +180,117 @@ const worker = new Worker(
     const backgroundsReplacedCount = assembled.replacedEntryPaths.filter((entryPath) => entryPath.startsWith("backgrounds/")).length;
     const imageReplacedCount = assembled.replacedEntryPaths.filter((entryPath) => !entryPath.startsWith("backgrounds/")).length;
 
-    await job.updateProgress(95);
-    jobLogger.info({ stage: "upload_to_wp" }, "progress updated");
-
     const outZipPath = assembled.outZipPath;
+
     let upload = {
       attempted: false,
+      mode: WP_SAVE_MODE,
       ok: false,
       status: null as number | null,
+      outZipUrl: null as string | null,
       responseJson: null as unknown | null,
       responseTextSnippet: null as string | null,
       uploadSkipped: true,
     };
 
-    if (WP_UPLOAD_ENABLED) {
-      upload.attempted = true;
-      upload.uploadSkipped = false;
+    if (WP_SAVE_MODE === "from_url") {
+      await job.updateProgress(92);
+      jobLogger.info({ stage: "publish_outzip" }, "progress updated");
 
-      const uploadResult = await uploadOutzip({
+      const staged = await createStagedFile({
+        jobId,
+        localZipPath: outZipPath,
+        stagedDirAbs: STAGED_DIR_ABS,
+        ttlSeconds: STAGED_TTL_SECONDS,
+        redis: getQueueRedisConnection(),
+      });
+
+      const outZipUrl = buildStagedUrl({
+        baseUrl: PUBLIC_ZIP_BASE_URL,
+        name: staged.name,
+        token: staged.token,
+      });
+
+      await job.updateProgress(95);
+      jobLogger.info({ stage: "wp_save_from_url" }, "progress updated");
+
+      const saveResult = await saveOutzipFromUrl({
         endpoint: job.data.save.endpoint,
         presentationId: job.data.save.presentationId,
         saveToken: job.data.save.saveToken,
-        zipPath: outZipPath,
-        timeoutMs: WP_UPLOAD_TIMEOUT_MS,
+        outZipUrl,
+        timeoutMs: WP_SAVE_FROM_URL_TIMEOUT_MS,
       });
 
       upload = {
         attempted: true,
-        ok: uploadResult.ok,
-        status: uploadResult.status,
-        responseJson: uploadResult.responseJson,
-        responseTextSnippet: uploadResult.responseText.slice(0, UPLOAD_TEXT_LIMIT),
+        mode: "from_url",
+        ok: saveResult.ok,
+        status: saveResult.status,
+        outZipUrl,
+        responseJson: saveResult.responseJson,
+        responseTextSnippet: saveResult.responseText.slice(0, UPLOAD_TEXT_LIMIT),
         uploadSkipped: false,
       };
 
-      if (!uploadResult.ok) {
-        const shortReason = uploadResult.responseText.slice(0, 120).replace(/\s+/g, " ");
-        const failMessage = `WPUploadFailed: ${uploadResult.status} ${shortReason}`;
+      if (saveResult.ok) {
+        await deleteStagedRecord(getQueueRedisConnection(), staged.name);
+        await fs.unlink(staged.absPath).catch(() => undefined);
+      } else {
+        const shortReason = saveResult.responseText.slice(0, 120).replace(/\s+/g, " ");
+        const failMessage = `WPSaveFromUrlFailed: ${saveResult.status} ${shortReason}`;
 
         if (WP_FAIL_ON_UPLOAD_ERROR) {
           throw new Error(failMessage);
         }
 
-        jobLogger.error({ status: uploadResult.status, endpoint: job.data.save.endpoint }, failMessage);
+        jobLogger.error({ status: saveResult.status, endpoint: job.data.save.endpoint }, failMessage);
+      }
+    } else if (WP_SAVE_MODE === "upload") {
+      await job.updateProgress(95);
+      jobLogger.info({ stage: "upload_to_wp" }, "progress updated");
+
+      if (WP_UPLOAD_ENABLED) {
+        const uploadResult = await uploadOutzip({
+          endpoint: job.data.save.endpoint,
+          presentationId: job.data.save.presentationId,
+          saveToken: job.data.save.saveToken,
+          zipPath: outZipPath,
+          timeoutMs: WP_UPLOAD_TIMEOUT_MS,
+        });
+
+        upload = {
+          attempted: true,
+          mode: "upload",
+          ok: uploadResult.ok,
+          status: uploadResult.status,
+          outZipUrl: null,
+          responseJson: uploadResult.responseJson,
+          responseTextSnippet: uploadResult.responseText.slice(0, UPLOAD_TEXT_LIMIT),
+          uploadSkipped: false,
+        };
+
+        if (!uploadResult.ok) {
+          const shortReason = uploadResult.responseText.slice(0, 120).replace(/\s+/g, " ");
+          const failMessage = `WPUploadFailed: ${uploadResult.status} ${shortReason}`;
+
+          if (WP_FAIL_ON_UPLOAD_ERROR) {
+            throw new Error(failMessage);
+          }
+
+          jobLogger.error({ status: uploadResult.status, endpoint: job.data.save.endpoint }, failMessage);
+        }
+      } else {
+        upload = {
+          attempted: false,
+          mode: "upload",
+          ok: false,
+          status: null,
+          outZipUrl: null,
+          responseJson: null,
+          responseTextSnippet: null,
+          uploadSkipped: true,
+        };
       }
     }
 
@@ -256,6 +333,7 @@ const worker = new Worker(
         backgroundsReplacedCount,
         backgroundsMissingCount: backgroundsMissing.length,
         uploadAttempted: upload.attempted,
+        uploadMode: upload.mode,
         uploadOk: upload.ok,
         uploadStatus: upload.status,
         outZipPath,

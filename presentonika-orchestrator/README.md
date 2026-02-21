@@ -175,47 +175,65 @@ unzip -p out/<jobId>.out.zip backgrounds/slide-2.png | wc -c
 Файлы должны существовать, и обычно фоновые PNG для разных слайдов будут отличаться.
 
 
-## Этап 7: загрузка out.zip в WordPress
+## Этап 7: from_url сохранение в WordPress (`save-outzip-from-url`)
 
-После локальной сборки `out/<jobId>.out.zip` worker отправляет архив в `save.endpoint` из job payload (`save.presentationId`, `save.saveToken`) как `multipart/form-data`.
+По умолчанию orchestrator использует режим `from_url`:
+1. Публикует собранный архив во временное staging-хранилище (`/staged/...`).
+2. Вызывает WP endpoint `save-outzip-from-url` с JSON `{ "outZipUrl": "..." }`.
+3. WP скачивает архив сам (маленький запрос вместо большого multipart upload).
 
-Флаги окружения:
-- `WP_UPLOAD_ENABLED=true|false` — включить/выключить загрузку
-- `WP_UPLOAD_TIMEOUT_MS` — timeout запроса upload (мс)
-- `WP_FAIL_ON_UPLOAD_ERROR=true|false` — падать ли job при ошибке upload
+Ключевые env-переменные:
+- `WP_SAVE_MODE=from_url|upload` (default `from_url`)
+- `PUBLIC_ZIP_BASE_URL` (локально: `http://localhost:8080`, прод: `https://editor.presentonika.ru`)
+- `STAGED_ENABLE_SERVER=true`
+- `STAGED_DIR=.staged`
+- `STAGED_TTL_SECONDS=1800`
+- `WP_SAVE_FROM_URL_TIMEOUT_MS=30000`
+- `WP_FAIL_ON_UPLOAD_ERROR=true|false`
 
-В `returnValue` добавляется `upload`:
-- `attempted`
-- `ok`
-- `status`
-- `responseJson`
-- `responseTextSnippet`
-- `uploadSkipped`
+`returnValue.upload` в режиме `from_url` содержит:
+- `mode: "from_url"`
+- `outZipUrl`
+- `attempted`, `ok`, `status`
+- `responseJson`, `responseTextSnippet`
 
-### Локальная проверка с mock endpoint
+### Локальный тест без реального WordPress
 
-Сервер зарегистрирован с увеличенными multipart-лимитами во всех режимах: `fileSize=200MB`, `files=1`, `fields=50`, чтобы загрузка `out.zip` (обычно 40–50MB) не падала с `413 FST_REQ_FILE_TOO_LARGE`.
-
-1. В `.env` включите mock:
+1. В `.env`:
 
 ```bash
 ENABLE_MOCK_WP=true
-WP_UPLOAD_ENABLED=true
+WP_SAVE_MODE=from_url
+PUBLIC_ZIP_BASE_URL=http://localhost:8080
 ```
 
-2. В payload job укажите:
+2. В payload job укажите endpoint:
 
 ```json
 "save": {
-  "endpoint": "http://localhost:8080/mock/wp-save-outzip",
+  "endpoint": "http://localhost:8080/mock/wp-save-outzip-from-url",
   "presentationId": 123,
   "saveToken": "TOKEN"
 }
 ```
 
-3. После выполнения job проверьте, что файл сохранён:
+3. После выполнения job проверьте:
 
 ```bash
 ls .tmp/mock-wp/123/received.out.zip
 ```
 
+### Продакшен заметка
+
+Для production `outZipUrl` должен быть на домене editor (allowlist в WP).
+Когда orchestrator будет на VPS, проксируйте `/staged/*` editor-доменом на orchestrator:
+
+```nginx
+location /staged/ {
+  proxy_pass http://127.0.0.1:<ORCH_PORT>/staged/;
+}
+```
+
+### Fallback режим
+
+Если нужен старый multipart-путь, установите `WP_SAVE_MODE=upload` — orchestrator использует прежнюю загрузку файла в `save.endpoint`.

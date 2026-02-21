@@ -3,14 +3,17 @@ import Fastify from "fastify";
 import multipart from "@fastify/multipart";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { getQueue } from "./queue";
+import { getQueue, getQueueRedisConnection } from "./queue";
 import { createJobSchema } from "./schema";
 import { logger } from "./logger";
+import { registerStagedRoutes } from "./staged/stagedRoutes";
 
 dotenv.config();
 
 const port = Number(process.env.PORT || 8080);
 const mockWpEnabled = process.env.ENABLE_MOCK_WP === "true";
+const stagedServerEnabled = process.env.STAGED_ENABLE_SERVER !== "false";
+const stagedDirAbs = path.resolve(process.env.STAGED_DIR || ".staged");
 const app = Fastify({ logger });
 
 void app.register(multipart, {
@@ -20,6 +23,13 @@ void app.register(multipart, {
     fields: 50,
   },
 });
+
+if (stagedServerEnabled) {
+  registerStagedRoutes(app, {
+    redis: getQueueRedisConnection(),
+    stagedDirAbs,
+  });
+}
 
 app.get("/health", async () => ({
   ok: true,
@@ -132,6 +142,35 @@ if (mockWpEnabled) {
       ok: true,
       presentationId,
       bytes: fileBuffer.byteLength,
+      storedPath: path.relative(process.cwd(), storedPath),
+    };
+  });
+
+  app.post<{ Body: { outZipUrl?: string } }>("/mock/wp-save-outzip-from-url", async (request, reply) => {
+    const outZipUrl = request.body?.outZipUrl;
+    const presentationId = String(request.headers["x-presentation-id"] ?? "");
+    const saveToken = String(request.headers["x-save-token"] ?? "");
+
+    if (!outZipUrl || !presentationId || !saveToken) {
+      return reply.status(400).send({ ok: false, error: "invalid_request" });
+    }
+
+    const response = await fetch(outZipUrl);
+    if (!response.ok) {
+      return reply.status(400).send({ ok: false, error: `download_failed_${response.status}` });
+    }
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    const storedPath = path.resolve(".tmp", "mock-wp", presentationId, "received.out.zip");
+    await fs.mkdir(path.dirname(storedPath), { recursive: true });
+    await fs.writeFile(storedPath, buffer);
+
+    return {
+      ok: true,
+      presentationId,
+      bytes: buffer.byteLength,
       storedPath: path.relative(process.cwd(), storedPath),
     };
   });
