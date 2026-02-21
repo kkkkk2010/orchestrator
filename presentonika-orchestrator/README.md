@@ -188,6 +188,8 @@ unzip -p out/<jobId>.out.zip backgrounds/slide-2.png | wc -c
 - `STAGED_ENABLE_SERVER=true`
 - `STAGED_DIR=.staged`
 - `STAGED_TTL_SECONDS=1800`
+- `STAGED_CLEANUP_ON_SUCCESS=true|false`
+- `STAGED_CLEANUP_DELAY_SECONDS=0`
 - `WP_SAVE_FROM_URL_TIMEOUT_MS=30000`
 - `WP_FAIL_ON_UPLOAD_ERROR=true|false`
 
@@ -222,6 +224,13 @@ PUBLIC_ZIP_BASE_URL=http://localhost:8080
 ```bash
 ls .tmp/mock-wp/123/received.out.zip
 ```
+
+
+После успешного `from_url` сохранения staged URL может стать недоступным (`404 not_found`) — это зависит от cleanup-настроек.
+
+Для отладки (чтобы URL жил дольше):
+- `STAGED_CLEANUP_ON_SUCCESS=false` (полагаться на TTL), или
+- `STAGED_CLEANUP_DELAY_SECONDS=<N>` чтобы удалить staged-файл с задержкой.
 
 ### Продакшен заметка
 

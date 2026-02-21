@@ -31,6 +31,23 @@ const WP_SAVE_FROM_URL_TIMEOUT_MS = parseInt(process.env.WP_SAVE_FROM_URL_TIMEOU
 const PUBLIC_ZIP_BASE_URL = process.env.PUBLIC_ZIP_BASE_URL || "http://localhost:8080";
 const STAGED_DIR_ABS = path.resolve(process.env.STAGED_DIR || ".staged");
 const STAGED_TTL_SECONDS = parseInt(process.env.STAGED_TTL_SECONDS || "1800", 10);
+const STAGED_CLEANUP_ON_SUCCESS = process.env.STAGED_CLEANUP_ON_SUCCESS !== "false";
+const STAGED_CLEANUP_DELAY_SECONDS = parseInt(process.env.STAGED_CLEANUP_DELAY_SECONDS || "0", 10);
+
+
+
+const cleanupStagedFile = async (params: {
+  stagedName: string;
+  stagedAbsPath: string;
+  jobLogger: typeof logger;
+}): Promise<void> => {
+  try {
+    await deleteStagedRecord(getQueueRedisConnection(), params.stagedName);
+    await fs.unlink(params.stagedAbsPath).catch(() => undefined);
+  } catch (error) {
+    params.jobLogger.warn({ err: error, stagedName: params.stagedName }, "staged cleanup failed");
+  }
+};
 
 const buildTestFills = (fillKeys: string[]): Record<string, string> => {
   const fills: Record<string, string> = {};
@@ -234,8 +251,24 @@ const worker = new Worker(
       };
 
       if (saveResult.ok) {
-        await deleteStagedRecord(getQueueRedisConnection(), staged.name);
-        await fs.unlink(staged.absPath).catch(() => undefined);
+        if (STAGED_CLEANUP_ON_SUCCESS) {
+          if (STAGED_CLEANUP_DELAY_SECONDS > 0) {
+            const delayMs = STAGED_CLEANUP_DELAY_SECONDS * 1000;
+            setTimeout(() => {
+              void cleanupStagedFile({
+                stagedName: staged.name,
+                stagedAbsPath: staged.absPath,
+                jobLogger,
+              });
+            }, delayMs);
+          } else {
+            await cleanupStagedFile({
+              stagedName: staged.name,
+              stagedAbsPath: staged.absPath,
+              jobLogger,
+            });
+          }
+        }
       } else {
         const shortReason = saveResult.responseText.slice(0, 120).replace(/\s+/g, " ");
         const failMessage = `WPSaveFromUrlFailed: ${saveResult.status} ${shortReason}`;
