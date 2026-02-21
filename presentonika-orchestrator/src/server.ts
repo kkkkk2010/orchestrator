@@ -79,7 +79,13 @@ app.get<{ Params: { id: string } }>("/jobs/:id", async (request, reply) => {
 });
 
 if (mockWpEnabled) {
-  void app.register(multipart);
+  void app.register(multipart, {
+    limits: {
+      fileSize: 200 * 1024 * 1024,
+      files: 1,
+      fields: 50,
+    },
+  });
 
   app.post("/mock/wp-save-outzip", async (request, reply) => {
     const parts = request.parts();

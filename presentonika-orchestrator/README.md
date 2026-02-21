@@ -194,6 +194,8 @@ unzip -p out/<jobId>.out.zip backgrounds/slide-2.png | wc -c
 
 ### Локальная проверка с mock endpoint
 
+Mock endpoint зарегистрирован с увеличенными multipart-лимитами: `fileSize=200MB`, `files=1`, `fields=50`, чтобы загрузка `out.zip` не падала с `413 FST_REQ_FILE_TOO_LARGE`.
+
 1. В `.env` включите mock:
 
 ```bash
