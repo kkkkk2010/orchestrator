@@ -11,12 +11,17 @@ import { assembleZip } from "./templates/assembleZip";
 import { planImageReplacements } from "./images/planImageReplacements";
 import { generateBackgrounds } from "./backgrounds/generateBackgrounds";
 import { normalizeBackgroundTheme } from "./backgrounds/theme";
+import { uploadOutzip } from "./wp/uploadOutzip";
 
 dotenv.config();
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
 const BACKGROUND_MISSING_LIMIT = 50;
+const UPLOAD_TEXT_LIMIT = 500;
+const WP_UPLOAD_TIMEOUT_MS = parseInt(process.env.WP_UPLOAD_TIMEOUT_MS || "20000", 10);
+const WP_UPLOAD_ENABLED = process.env.WP_UPLOAD_ENABLED === "true";
+const WP_FAIL_ON_UPLOAD_ERROR = process.env.WP_FAIL_ON_UPLOAD_ERROR !== "false";
 
 const buildTestFills = (fillKeys: string[]): Record<string, string> => {
   const fills: Record<string, string> = {};
@@ -164,6 +169,53 @@ const worker = new Worker(
     const imageMissingCapped = imageMissing.slice(0, IMAGE_MISSING_LIMIT);
     const backgroundsMissingCapped = backgroundsMissing.slice(0, BACKGROUND_MISSING_LIMIT);
     const backgroundsReplacedCount = assembled.replacedEntryPaths.filter((entryPath) => entryPath.startsWith("backgrounds/")).length;
+    const imageReplacedCount = assembled.replacedEntryPaths.filter((entryPath) => !entryPath.startsWith("backgrounds/")).length;
+
+    await job.updateProgress(95);
+    jobLogger.info({ stage: "upload_to_wp" }, "progress updated");
+
+    const outZipPath = assembled.outZipPath;
+    let upload = {
+      attempted: false,
+      ok: false,
+      status: null as number | null,
+      responseJson: null as unknown | null,
+      responseTextSnippet: null as string | null,
+      uploadSkipped: true,
+    };
+
+    if (WP_UPLOAD_ENABLED) {
+      upload.attempted = true;
+      upload.uploadSkipped = false;
+
+      const uploadResult = await uploadOutzip({
+        endpoint: job.data.save.endpoint,
+        presentationId: job.data.save.presentationId,
+        saveToken: job.data.save.saveToken,
+        zipPath: outZipPath,
+        timeoutMs: WP_UPLOAD_TIMEOUT_MS,
+      });
+
+      upload = {
+        attempted: true,
+        ok: uploadResult.ok,
+        status: uploadResult.status,
+        responseJson: uploadResult.responseJson,
+        responseTextSnippet: uploadResult.responseText.slice(0, UPLOAD_TEXT_LIMIT),
+        uploadSkipped: false,
+      };
+
+      if (!uploadResult.ok) {
+        const shortReason = uploadResult.responseText.slice(0, 120).replace(/\s+/g, " ");
+        const failMessage = `WPUploadFailed: ${uploadResult.status} ${shortReason}`;
+
+        if (WP_FAIL_ON_UPLOAD_ERROR) {
+          throw new Error(failMessage);
+        }
+
+        jobLogger.error({ status: uploadResult.status, endpoint: job.data.save.endpoint }, failMessage);
+      }
+    }
 
     const result = {
       ok: true,
@@ -172,18 +224,19 @@ const worker = new Worker(
       fillKeys,
       imageSlots,
       assemble: {
-        outZipPath: assembled.outZipPath,
+        outZipPath,
         replacedCount: fillsStats.replacedCount,
         missingKeys: fillsStats.missingKeys,
         droppedCount: variantsStats.droppedCount,
         droppedAtCount: variantsStats.droppedAtCount,
         imagePlannedCount: imagePlan.plannedCount,
-        imageReplacedCount: assembled.replacedEntryPaths.filter((entryPath) => !entryPath.startsWith("backgrounds/")).length,
+        imageReplacedCount,
         imageMissing: imageMissingCapped,
         backgroundsPlannedCount: slideCount,
         backgroundsReplacedCount,
         backgroundsMissing: backgroundsMissingCapped,
       },
+      upload,
     };
 
     await job.updateProgress(100);
@@ -197,12 +250,15 @@ const worker = new Worker(
         droppedCount: variantsStats.droppedCount,
         droppedAtCount: variantsStats.droppedAtCount,
         imagePlannedCount: imagePlan.plannedCount,
-        imageReplacedCount: result.assemble.imageReplacedCount,
+        imageReplacedCount,
         imageMissingCount: imageMissing.length,
         backgroundsPlannedCount: slideCount,
         backgroundsReplacedCount,
         backgroundsMissingCount: backgroundsMissing.length,
-        outZipPath: assembled.outZipPath,
+        uploadAttempted: upload.attempted,
+        uploadOk: upload.ok,
+        uploadStatus: upload.status,
+        outZipPath,
       },
       "job completed"
     );

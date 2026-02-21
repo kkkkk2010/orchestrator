@@ -78,6 +78,7 @@ If job is completed, response includes `returnValue` with:
 - `assemble.backgroundsPlannedCount`
 - `assemble.backgroundsReplacedCount`
 - `assemble.backgroundsMissing`
+- `upload` (attempted/ok/status/response*)
 
 ## Этап 3: локальная сборка out.zip
 
@@ -172,3 +173,47 @@ unzip -p out/<jobId>.out.zip backgrounds/slide-2.png | wc -c
 ```
 
 Файлы должны существовать, и обычно фоновые PNG для разных слайдов будут отличаться.
+
+
+## Этап 7: загрузка out.zip в WordPress
+
+После локальной сборки `out/<jobId>.out.zip` worker отправляет архив в `save.endpoint` из job payload (`save.presentationId`, `save.saveToken`) как `multipart/form-data`.
+
+Флаги окружения:
+- `WP_UPLOAD_ENABLED=true|false` — включить/выключить загрузку
+- `WP_UPLOAD_TIMEOUT_MS` — timeout запроса upload (мс)
+- `WP_FAIL_ON_UPLOAD_ERROR=true|false` — падать ли job при ошибке upload
+
+В `returnValue` добавляется `upload`:
+- `attempted`
+- `ok`
+- `status`
+- `responseJson`
+- `responseTextSnippet`
+- `uploadSkipped`
+
+### Локальная проверка с mock endpoint
+
+1. В `.env` включите mock:
+
+```bash
+ENABLE_MOCK_WP=true
+WP_UPLOAD_ENABLED=true
+```
+
+2. В payload job укажите:
+
+```json
+"save": {
+  "endpoint": "http://localhost:8080/mock/wp-save-outzip",
+  "presentationId": 123,
+  "saveToken": "TOKEN"
+}
+```
+
+3. После выполнения job проверьте, что файл сохранён:
+
+```bash
+ls .tmp/mock-wp/123/received.out.zip
+```
+
