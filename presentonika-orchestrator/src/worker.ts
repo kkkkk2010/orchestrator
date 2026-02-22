@@ -36,6 +36,12 @@ const STAGED_CLEANUP_DELAY_SECONDS = parseInt(process.env.STAGED_CLEANUP_DELAY_S
 
 
 
+const MAX_SLIDES = parseInt(process.env.MAX_SLIDES || "30", 10);
+const MAX_TEMPLATE_ZIP_BYTES = parseInt(process.env.MAX_TEMPLATE_ZIP_BYTES || "200000000", 10);
+const MAX_OUTZIP_BYTES_LOCAL = parseInt(process.env.MAX_OUTZIP_BYTES_LOCAL || "250000000", 10);
+const MAX_STAGED_BYTES = parseInt(process.env.MAX_STAGED_BYTES || String(MAX_OUTZIP_BYTES_LOCAL), 10);
+
+
 const cleanupStagedFile = async (params: {
   stagedName: string;
   stagedAbsPath: string;
@@ -47,6 +53,35 @@ const cleanupStagedFile = async (params: {
   } catch (error) {
     params.jobLogger.warn({ err: error, stagedName: params.stagedName }, "staged cleanup failed");
   }
+};
+
+type StageName =
+  | "load_theme_pack"
+  | "read_template_zip"
+  | "parse_doc"
+  | "apply_variants_fills"
+  | "prepare_images"
+  | "generate_backgrounds"
+  | "assemble_zip"
+  | "publish_outzip"
+  | "wp_save_from_url"
+  | "upload_to_wp";
+
+const createStageTimer = (): {
+  mark: (stage: StageName) => void;
+  timingsMs: Partial<Record<StageName, number>>;
+} => {
+  const timingsMs: Partial<Record<StageName, number>> = {};
+  let last = Date.now();
+
+  return {
+    mark: (stage: StageName) => {
+      const now = Date.now();
+      timingsMs[stage] = now - last;
+      last = now;
+    },
+    timingsMs,
+  };
 };
 
 const buildTestFills = (fillKeys: string[]): Record<string, string> => {
@@ -69,14 +104,23 @@ const worker = new Worker(
 
     jobLogger.info("job started");
 
+    const { mark, timingsMs } = createStageTimer();
+
     await job.updateProgress(10);
     jobLogger.info({ stage: "load_theme_pack" }, "progress updated");
     const themeDir = getThemeDir(themeId);
     const templatePath = await assertThemeTemplateExists(themeId);
+    mark("load_theme_pack");
+
+    const templateStats = await fs.stat(templatePath);
+    if (templateStats.size > MAX_TEMPLATE_ZIP_BYTES) {
+      throw new Error(`TemplateTooLarge: ${templateStats.size} > ${MAX_TEMPLATE_ZIP_BYTES}`);
+    }
 
     await job.updateProgress(30);
     jobLogger.info({ stage: "read_template_zip" }, "progress updated");
     const doc = await readDocJsonFromTemplateZip(templatePath);
+    mark("read_template_zip");
 
     await job.updateProgress(60);
     jobLogger.info({ stage: "parse_doc" }, "progress updated");
@@ -84,6 +128,11 @@ const worker = new Worker(
     const fillKeys = extractFillKeys(doc);
     const imageSlots = extractImageSlots(doc);
     const slideCount = inferSlideCount(doc);
+    mark("parse_doc");
+
+    if (slideCount > MAX_SLIDES) {
+      throw new Error(`TooManySlides: ${slideCount} > ${MAX_SLIDES}`);
+    }
 
     const generatedFills = buildTestFills(fillKeys);
     const debugFillsRaw = job.data?.debug?.fills;
@@ -101,11 +150,13 @@ const worker = new Worker(
       },
     });
     const fillsStats = applyFills(doc, fills);
+    mark("apply_variants_fills");
 
     await job.updateProgress(80);
     jobLogger.info({ stage: "prepare_images" }, "progress updated");
 
     const imagePlan = await planImageReplacements({ doc, map, themeDir });
+    mark("prepare_images");
     for (const missingItem of imagePlan.missing) {
       jobLogger.warn(
         {
@@ -129,6 +180,7 @@ const worker = new Worker(
       slideCount,
       theme: backgroundTheme,
     });
+    mark("generate_backgrounds");
 
     for (const missingBackground of backgrounds.missing) {
       jobLogger.warn(
@@ -154,6 +206,7 @@ const worker = new Worker(
         ...backgrounds.replacements,
       },
     });
+    mark("assemble_zip");
 
     const imageMissing = [...imagePlan.missing];
     for (const missingEntryPath of assembled.missingEntryPaths) {
@@ -202,6 +255,21 @@ const worker = new Worker(
     const imageReplacedCount = assembled.replacedEntryPaths.filter((entryPath) => !entryPath.startsWith("backgrounds/")).length;
 
     const outZipPath = assembled.outZipPath;
+    const outZipStats = await fs.stat(outZipPath);
+    const outZipBytes = outZipStats.size;
+    if (outZipBytes > MAX_OUTZIP_BYTES_LOCAL) {
+      throw new Error(`OutZipTooLarge: ${outZipBytes} > ${MAX_OUTZIP_BYTES_LOCAL}`);
+    }
+
+    const backgroundsBytesTotal = await Object.values(backgrounds.replacements).reduce(async (accPromise, filePath) => {
+      const acc = await accPromise;
+      try {
+        const stats = await fs.stat(filePath);
+        return acc + stats.size;
+      } catch {
+        return acc;
+      }
+    }, Promise.resolve(0));
 
     let upload = {
       attempted: false,
@@ -218,6 +286,10 @@ const worker = new Worker(
       await job.updateProgress(92);
       jobLogger.info({ stage: "publish_outzip" }, "progress updated");
 
+      if (outZipBytes > MAX_STAGED_BYTES) {
+        throw new Error(`StagedTooLarge: ${outZipBytes} > ${MAX_STAGED_BYTES}`);
+      }
+
       const staged = await createStagedFile({
         jobId,
         localZipPath: outZipPath,
@@ -225,6 +297,8 @@ const worker = new Worker(
         ttlSeconds: STAGED_TTL_SECONDS,
         redis: getQueueRedisConnection(),
       });
+
+      mark("publish_outzip");
 
       const outZipUrl = buildStagedUrl({
         baseUrl: PUBLIC_ZIP_BASE_URL,
@@ -242,6 +316,8 @@ const worker = new Worker(
         outZipUrl,
         timeoutMs: WP_SAVE_FROM_URL_TIMEOUT_MS,
       });
+
+      mark("wp_save_from_url");
 
       upload = {
         attempted: true,
@@ -295,6 +371,8 @@ const worker = new Worker(
           zipPath: outZipPath,
           timeoutMs: WP_UPLOAD_TIMEOUT_MS,
         });
+
+        mark("upload_to_wp");
 
         upload = {
           attempted: true,
@@ -353,6 +431,17 @@ const worker = new Worker(
         backgroundsMissing: backgroundsMissingCapped,
       },
       upload,
+      stats: {
+        timingsMs,
+        outZipBytes,
+        backgroundsBytesTotal,
+        backgroundsCount: Object.keys(backgrounds.replacements).length,
+        stagedCleanupMode: STAGED_CLEANUP_ON_SUCCESS
+          ? STAGED_CLEANUP_DELAY_SECONDS > 0
+            ? "delay"
+            : "immediate"
+          : "disabled",
+      },
     };
 
     await job.updateProgress(100);

@@ -7,6 +7,7 @@ import { getQueue, getQueueRedisConnection } from "./queue";
 import { createJobSchema } from "./schema";
 import { logger } from "./logger";
 import { registerStagedRoutes } from "./staged/stagedRoutes";
+import { startCleanupService } from "./cleanup/cleanupService";
 
 dotenv.config();
 
@@ -15,6 +16,14 @@ const mockWpEnabled = process.env.ENABLE_MOCK_WP === "true";
 const stagedServerEnabled = process.env.STAGED_ENABLE_SERVER !== "false";
 const stagedDirAbs = path.resolve(process.env.STAGED_DIR || ".staged");
 const app = Fastify({ logger });
+
+
+const stopCleanupService = startCleanupService({
+  tmpDirAbs: path.resolve(".tmp"),
+  outDirAbs: path.resolve("out"),
+  stagedDirAbs,
+  mockWpDirAbs: path.resolve(".tmp", "mock-wp"),
+});
 
 void app.register(multipart, {
   limits: {
@@ -186,3 +195,10 @@ const start = async (): Promise<void> => {
 };
 
 void start();
+
+const shutdown = (): void => {
+  stopCleanupService();
+};
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

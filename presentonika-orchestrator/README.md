@@ -306,3 +306,64 @@ location /staged/ {
 Результат выбора смотрите в:
 - `GET /jobs/:id -> returnValue.assemble.chosenVariants`
 - `GET /jobs/:id -> returnValue.assemble.debugFillsApplied`
+
+## Этап 10: Hardening (cleanup + limits + timings)
+
+### Cleanup service
+
+API-процесс запускает периодический cleanup (worker не запускает его):
+- удаляет старые `.tmp/<jobId>/...` директории,
+- удаляет старые `out/*.out.zip`,
+- удаляет старые `.staged/*` как safety-net,
+- удаляет старые `.tmp/mock-wp/<presentationId>/...`.
+
+Cleanup best-effort: ошибки логируются warning-логами и не падают процесс.
+
+Новые env:
+- `ENABLE_CLEANUP=true`
+- `ARTIFACT_TTL_SECONDS=21600`
+- `CLEANUP_INTERVAL_SECONDS=600`
+- `MOCK_WP_TTL_SECONDS=21600`
+
+### Limits / guardrails
+
+Worker теперь валидирует лимиты:
+- `MAX_TEMPLATE_ZIP_BYTES` — размер `template.out.zip` перед чтением.
+- `MAX_SLIDES` — максимальное число слайдов после parse_doc.
+- `MAX_OUTZIP_BYTES_LOCAL` — размер итогового `out/<jobId>.out.zip` после assemble.
+- `MAX_STAGED_BYTES` — размер zip перед публикацией в `.staged`.
+
+Ошибки выглядят так:
+- `TemplateTooLarge: <size> > <limit>`
+- `TooManySlides: <count> > <limit>`
+- `OutZipTooLarge: <size> > <limit>`
+- `StagedTooLarge: <size> > <limit>`
+
+### Диагностика: stage timings + stats
+
+`GET /jobs/:id -> returnValue.stats` теперь содержит:
+- `timingsMs` по стадиям:
+  - `load_theme_pack`
+  - `read_template_zip`
+  - `parse_doc`
+  - `apply_variants_fills`
+  - `prepare_images`
+  - `generate_backgrounds`
+  - `assemble_zip`
+  - `publish_outzip`
+  - `wp_save_from_url` / `upload_to_wp`
+- `outZipBytes`
+- `backgroundsBytesTotal`
+- `backgroundsCount`
+- `stagedCleanupMode` (`immediate` / `delay` / `disabled`)
+
+### Быстрая manual-проверка
+
+1. Проверка cleanup:
+   - выставьте `ARTIFACT_TTL_SECONDS=5`, `CLEANUP_INTERVAL_SECONDS=3`, `ENABLE_CLEANUP=true`;
+   - выполните job;
+   - подождите >5s и проверьте, что старые артефакты удалились из `.tmp`, `out`, `.staged`.
+
+2. Проверка лимита out zip:
+   - временно выставьте `MAX_OUTZIP_BYTES_LOCAL=1000000` (1MB);
+   - выполните job и убедитесь, что задача падает с `OutZipTooLarge`.
