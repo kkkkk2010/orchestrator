@@ -327,11 +327,15 @@ location /staged/ {
 
 API-процесс запускает периодический cleanup (worker не запускает его):
 - удаляет старые `.tmp/<jobId>/...` директории,
+- **пропускает активные job-директории с `.tmp/<jobId>/.lock`**,
 - удаляет старые `out/*.out.zip`,
 - удаляет старые `.staged/*` как safety-net,
 - удаляет старые `.tmp/mock-wp/<presentationId>/...`.
 
 Cleanup best-effort: ошибки логируются warning-логами и не падают процесс.
+
+
+TTL-переменные (`ARTIFACT_TTL_SECONDS`, `MOCK_WP_TTL_SECONDS`) задаются в **секундах** и сравниваются cleanup-сервисом корректно в миллисекундах (`ttlMs = seconds * 1000`).
 
 Новые env:
 - `ENABLE_CLEANUP=true`

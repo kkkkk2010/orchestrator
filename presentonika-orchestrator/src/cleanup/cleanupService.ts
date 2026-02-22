@@ -4,8 +4,8 @@ import { logger } from "../logger";
 
 const nowMs = (): number => Date.now();
 
-const isOlderThanTtl = (mtimeMs: number, ttlSeconds: number): boolean => {
-  return nowMs() - mtimeMs > ttlSeconds * 1000;
+const isOlderThanTtl = (mtimeMs: number, ttlMs: number): boolean => {
+  return nowMs() - mtimeMs > ttlMs;
 };
 
 const listDirEntries = async (dirPath: string): Promise<string[]> => {
@@ -24,6 +24,12 @@ const safeStat = async (targetPath: string): Promise<Awaited<ReturnType<typeof f
   }
 };
 
+
+const hasJobLockFile = async (jobDirAbs: string): Promise<boolean> => {
+  const lockStats = await safeStat(path.resolve(jobDirAbs, ".lock"));
+  return Boolean(lockStats && lockStats.isFile());
+};
+
 const safeRm = async (targetPath: string): Promise<boolean> => {
   try {
     await fs.rm(targetPath, { recursive: true, force: true });
@@ -34,7 +40,7 @@ const safeRm = async (targetPath: string): Promise<boolean> => {
   }
 };
 
-const cleanupTmpJobs = async (tmpDirAbs: string, artifactTtlSeconds: number): Promise<number> => {
+const cleanupTmpJobs = async (tmpDirAbs: string, artifactTtlMs: number): Promise<number> => {
   let deleted = 0;
   const names = await listDirEntries(tmpDirAbs);
 
@@ -50,7 +56,11 @@ const cleanupTmpJobs = async (tmpDirAbs: string, artifactTtlSeconds: number): Pr
     }
 
     const looksLikeJobDir = name.startsWith("p_");
-    if (!looksLikeJobDir && !isOlderThanTtl(stats.mtimeMs, artifactTtlSeconds)) {
+    if (looksLikeJobDir && await hasJobLockFile(absPath)) {
+      continue;
+    }
+
+    if (!isOlderThanTtl(stats.mtimeMs, artifactTtlMs)) {
       continue;
     }
 
@@ -62,7 +72,7 @@ const cleanupTmpJobs = async (tmpDirAbs: string, artifactTtlSeconds: number): Pr
   return deleted;
 };
 
-const cleanupMockWp = async (mockWpDirAbs: string, mockWpTtlSeconds: number): Promise<number> => {
+const cleanupMockWp = async (mockWpDirAbs: string, mockWpTtlMs: number): Promise<number> => {
   let deleted = 0;
   const names = await listDirEntries(mockWpDirAbs);
 
@@ -73,7 +83,7 @@ const cleanupMockWp = async (mockWpDirAbs: string, mockWpTtlSeconds: number): Pr
       continue;
     }
 
-    if (!isOlderThanTtl(stats.mtimeMs, mockWpTtlSeconds)) {
+    if (!isOlderThanTtl(stats.mtimeMs, mockWpTtlMs)) {
       continue;
     }
 
@@ -85,7 +95,7 @@ const cleanupMockWp = async (mockWpDirAbs: string, mockWpTtlSeconds: number): Pr
   return deleted;
 };
 
-const cleanupOutDir = async (outDirAbs: string, artifactTtlSeconds: number): Promise<number> => {
+const cleanupOutDir = async (outDirAbs: string, artifactTtlMs: number): Promise<number> => {
   let deleted = 0;
   const names = await listDirEntries(outDirAbs);
 
@@ -100,7 +110,7 @@ const cleanupOutDir = async (outDirAbs: string, artifactTtlSeconds: number): Pro
       continue;
     }
 
-    if (!isOlderThanTtl(stats.mtimeMs, artifactTtlSeconds)) {
+    if (!isOlderThanTtl(stats.mtimeMs, artifactTtlMs)) {
       continue;
     }
 
@@ -112,7 +122,7 @@ const cleanupOutDir = async (outDirAbs: string, artifactTtlSeconds: number): Pro
   return deleted;
 };
 
-const cleanupStagedDir = async (stagedDirAbs: string, artifactTtlSeconds: number): Promise<number> => {
+const cleanupStagedDir = async (stagedDirAbs: string, artifactTtlMs: number): Promise<number> => {
   let deleted = 0;
   const names = await listDirEntries(stagedDirAbs);
 
@@ -123,7 +133,7 @@ const cleanupStagedDir = async (stagedDirAbs: string, artifactTtlSeconds: number
       continue;
     }
 
-    if (!isOlderThanTtl(stats.mtimeMs, artifactTtlSeconds)) {
+    if (!isOlderThanTtl(stats.mtimeMs, artifactTtlMs)) {
       continue;
     }
 
@@ -150,6 +160,8 @@ export const startCleanupService = (opts?: {
   const artifactTtlSeconds = Number.parseInt(process.env.ARTIFACT_TTL_SECONDS || "21600", 10);
   const cleanupIntervalSeconds = Number.parseInt(process.env.CLEANUP_INTERVAL_SECONDS || "600", 10);
   const mockWpTtlSeconds = Number.parseInt(process.env.MOCK_WP_TTL_SECONDS || String(artifactTtlSeconds), 10);
+  const artifactTtlMs = artifactTtlSeconds * 1000;
+  const mockWpTtlMs = mockWpTtlSeconds * 1000;
 
   const tmpDirAbs = path.resolve(opts?.tmpDirAbs || ".tmp");
   const outDirAbs = path.resolve(opts?.outDirAbs || "out");
@@ -158,10 +170,10 @@ export const startCleanupService = (opts?: {
 
   const runCleanup = async (): Promise<void> => {
     try {
-      const deletedTmpDirs = await cleanupTmpJobs(tmpDirAbs, artifactTtlSeconds);
-      const deletedMockWpDirs = await cleanupMockWp(mockWpDirAbs, mockWpTtlSeconds);
-      const deletedOutZips = await cleanupOutDir(outDirAbs, artifactTtlSeconds);
-      const deletedStagedFiles = await cleanupStagedDir(stagedDirAbs, artifactTtlSeconds);
+      const deletedTmpDirs = await cleanupTmpJobs(tmpDirAbs, artifactTtlMs);
+      const deletedMockWpDirs = await cleanupMockWp(mockWpDirAbs, mockWpTtlMs);
+      const deletedOutZips = await cleanupOutDir(outDirAbs, artifactTtlMs);
+      const deletedStagedFiles = await cleanupStagedDir(stagedDirAbs, artifactTtlMs);
 
       logger.info(
         {
@@ -170,7 +182,9 @@ export const startCleanupService = (opts?: {
           deletedOutZips,
           deletedStagedFiles,
           artifactTtlSeconds,
+          artifactTtlMs,
           mockWpTtlSeconds,
+          mockWpTtlMs,
           cleanupIntervalSeconds,
         },
         "cleanup run completed"
@@ -188,7 +202,7 @@ export const startCleanupService = (opts?: {
   void runCleanup();
 
   logger.info(
-    { intervalMs, artifactTtlSeconds, mockWpTtlSeconds, tmpDirAbs, outDirAbs, stagedDirAbs, mockWpDirAbs },
+    { intervalMs, artifactTtlSeconds, artifactTtlMs, mockWpTtlSeconds, mockWpTtlMs, tmpDirAbs, outDirAbs, stagedDirAbs, mockWpDirAbs },
     "cleanup service started"
   );
 

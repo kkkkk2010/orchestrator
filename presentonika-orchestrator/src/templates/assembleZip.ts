@@ -31,8 +31,19 @@ const openZip = (zipPath: string): Promise<yauzl.ZipFile> => {
   });
 };
 
-const openEntryStream = (zipFile: yauzl.ZipFile, entry: yauzl.Entry): Promise<NodeJS.ReadableStream> => {
-  return new Promise((resolve, reject) => {
+
+const assertReplacementFileExists = async (filePath: string): Promise<void> => {
+  try {
+    const stats = await fsPromises.stat(filePath);
+    if (!stats.isFile()) {
+      throw new Error(`ReplacementMissing: ${filePath}`);
+    }
+  } catch {
+    throw new Error(`ReplacementMissing: ${filePath}`);
+  }
+};
+
+const openEntryStream = (zipFile: yauzl.ZipFile, entry: yauzl.Entry): Promise<NodeJS.ReadableStream> => {  return new Promise((resolve, reject) => {
     zipFile.openReadStream(entry, (error, stream) => {
       if (error || !stream) {
         reject(error ?? new Error(`AssembleFailed: unable to read entry ${entry.fileName}`));
@@ -97,6 +108,7 @@ export const assembleZip = async ({
     outputStream.on("error", (error) => fail(error instanceof Error ? error : new Error(String(error))));
     outputStream.on("close", succeed);
     zipFile.on("error", (error) => fail(error));
+    zipWriter.on("error", (error) => fail(error instanceof Error ? error : new Error(String(error))));
 
     zipFile.on("entry", async (entry) => {
       if (settled) {
@@ -119,6 +131,7 @@ export const assembleZip = async ({
 
         const replacementFilePath = replacements[entry.fileName];
         if (replacementFilePath) {
+          await assertReplacementFileExists(replacementFilePath);
           zipWriter.addFile(replacementFilePath, entry.fileName);
           replacedEntryPaths.add(entry.fileName);
           zipFile.readEntry();
@@ -148,6 +161,12 @@ export const assembleZip = async ({
           continue;
         }
 
+        try {
+          fs.accessSync(replacementFilePath, fs.constants.F_OK);
+        } catch {
+          throw new Error(`ReplacementMissing: ${replacementFilePath}`);
+        }
+
         zipWriter.addFile(replacementFilePath, entryPath);
         replacedEntryPaths.add(entryPath);
       }
@@ -159,7 +178,13 @@ export const assembleZip = async ({
         return;
       }
 
-      addMissingBackgroundEntries();
+      try {
+        addMissingBackgroundEntries();
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+
       zipWriter.end();
       zipFile.close();
     });

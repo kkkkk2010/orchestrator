@@ -131,7 +131,13 @@ const worker = new Worker(
 
     jobLogger.info("job started");
 
-    const { mark, timingsMs } = createStageTimer();
+    const jobTmpDir = path.resolve(".tmp", jobId);
+    const jobLockPath = path.resolve(jobTmpDir, ".lock");
+    await fs.mkdir(jobTmpDir, { recursive: true });
+    await fs.writeFile(jobLockPath, JSON.stringify({ startedAt: new Date().toISOString(), jobId }));
+
+    try {
+      const { mark, timingsMs } = createStageTimer();
 
     await job.updateProgress(10);
     jobLogger.info({ stage: "load_theme_pack" }, "progress updated");
@@ -528,6 +534,9 @@ const worker = new Worker(
     );
 
     return result;
+    } finally {
+      await fs.unlink(jobLockPath).catch(() => undefined);
+    }
   },
   {
     connection: getWorkerRedisConnection(),
