@@ -4,10 +4,16 @@ import { PNG } from "pngjs";
 import { BackgroundTheme } from "./theme";
 import { clamp8, lerp, mixRgb } from "./color";
 import { fnv1a32, mulberry32 } from "./prng";
+import { logger } from "../logger";
 
 const WIDTH = 1536;
 const HEIGHT = 864;
 const MISSING_LIMIT = 50;
+const DEFAULT_TIMEOUT_MS = 60_000;
+const BACKGROUND_GEN_TIMEOUT_MS_RAW = Number(process.env.BACKGROUND_GEN_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS);
+const BACKGROUND_GEN_TIMEOUT_MS = Number.isFinite(BACKGROUND_GEN_TIMEOUT_MS_RAW) && BACKGROUND_GEN_TIMEOUT_MS_RAW > 0
+  ? BACKGROUND_GEN_TIMEOUT_MS_RAW
+  : DEFAULT_TIMEOUT_MS;
 
 export type BackgroundMissing = {
   slide: number;
@@ -40,7 +46,7 @@ const blobContribution = (
   return Math.min(1, Math.exp(exponent) * alpha * 1.15);
 };
 
-const generateBackgroundPng = async (filePath: string, seedKey: string, theme: BackgroundTheme): Promise<void> => {
+const generateBackgroundPng = async (filePath: string, seedKey: string, theme: BackgroundTheme): Promise<number> => {
   const seed = fnv1a32(seedKey);
   const random = mulberry32(seed);
   const png = new PNG({ width: WIDTH, height: HEIGHT });
@@ -112,7 +118,27 @@ const generateBackgroundPng = async (filePath: string, seedKey: string, theme: B
   }
 
   const buffer = PNG.sync.write(png);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, buffer);
+  return buffer.byteLength;
+};
+
+
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+  let timeoutHandle: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new Error("BackgroundGenTimeout"));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
 };
 
 export const generateBackgrounds = async ({
@@ -126,34 +152,42 @@ export const generateBackgrounds = async ({
   slideCount: number;
   theme: BackgroundTheme;
 }): Promise<BackgroundGenerationResult> => {
-  const replacements: Record<string, string> = {};
-  const missing: BackgroundMissing[] = [];
+  return withTimeout(
+    (async () => {
+      const replacements: Record<string, string> = {};
+      const missing: BackgroundMissing[] = [];
 
-  const tmpDir = path.resolve(".tmp", jobId, "backgrounds");
-  await fs.mkdir(tmpDir, { recursive: true });
+      const tmpDir = path.resolve(".tmp", jobId, "backgrounds");
+      await fs.mkdir(tmpDir, { recursive: true });
 
-  for (let slide = 1; slide <= slideCount; slide += 1) {
-    const zipPath = `backgrounds/slide-${slide}.png`;
-    const localPath = path.resolve(tmpDir, `slide-${slide}.png`);
+      for (let slide = 1; slide <= slideCount; slide += 1) {
+        const zipPath = `backgrounds/slide-${slide}.png`;
+        const localPath = path.resolve(tmpDir, `slide-${slide}.png`);
 
-    try {
-      await generateBackgroundPng(localPath, `${presentationId}:${slide}`, theme);
-      replacements[zipPath] = localPath;
-    } catch (error) {
-      if (missing.length < MISSING_LIMIT) {
-        missing.push({
-          slide,
-          path: zipPath,
-          reason: error instanceof Error ? error.message : String(error),
-        });
+        logger.debug({ jobId, slide }, "background generation started");
+
+        try {
+          const bytes = await generateBackgroundPng(localPath, `${presentationId}:${slide}`, theme);
+          replacements[zipPath] = localPath;
+          logger.debug({ jobId, slide, bytes }, "background generation completed");
+        } catch (error) {
+          if (missing.length < MISSING_LIMIT) {
+            missing.push({
+              slide,
+              path: zipPath,
+              reason: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
       }
-    }
-  }
 
-  return {
-    replacements,
-    plannedCount: slideCount,
-    replacedCount: Object.keys(replacements).length,
-    missing,
-  };
+      return {
+        replacements,
+        plannedCount: slideCount,
+        replacedCount: Object.keys(replacements).length,
+        missing,
+      };
+    })(),
+    BACKGROUND_GEN_TIMEOUT_MS
+  );
 };

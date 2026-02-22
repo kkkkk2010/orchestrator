@@ -193,6 +193,7 @@ unzip -p out/<jobId>.out.zip backgrounds/slide-2.png | wc -c
 - `STAGED_CLEANUP_ON_SUCCESS=true|false`
 - `STAGED_CLEANUP_DELAY_SECONDS=0`
 - `WP_SAVE_FROM_URL_TIMEOUT_MS=30000`
+- `BACKGROUND_GEN_TIMEOUT_MS=60000` (таймаут генерации всех background-слайдов; при превышении job падает с `BackgroundGenTimeout`)
 - `WP_FAIL_ON_UPLOAD_ERROR=true|false`
 
 `returnValue.upload` в режиме `from_url` содержит:
