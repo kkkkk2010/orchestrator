@@ -15,6 +15,8 @@ import { generateBackgrounds } from "./backgrounds/generateBackgrounds";
 import { normalizeBackgroundTheme } from "./backgrounds/theme";
 import { uploadOutzip } from "./wp/uploadOutzip";
 import { saveOutzipFromUrl } from "./wp/saveOutzipFromUrl";
+import { waitForHttp } from "./net/waitForHttp";
+import { sleep } from "./util/sleep";
 import { buildStagedUrl, createStagedFile, deleteStagedRecord } from "./staged/stagedStore";
 
 dotenv.config();
@@ -28,6 +30,9 @@ const WP_UPLOAD_ENABLED = process.env.WP_UPLOAD_ENABLED === "true";
 const WP_FAIL_ON_UPLOAD_ERROR = process.env.WP_FAIL_ON_UPLOAD_ERROR !== "false";
 const WP_SAVE_MODE = (process.env.WP_SAVE_MODE || "from_url").toLowerCase();
 const WP_SAVE_FROM_URL_TIMEOUT_MS = parseInt(process.env.WP_SAVE_FROM_URL_TIMEOUT_MS || "30000", 10);
+const WP_SAVE_RETRIES = parseInt(process.env.WP_SAVE_RETRIES || "10", 10);
+const WP_SAVE_RETRY_BASE_DELAY_MS = parseInt(process.env.WP_SAVE_RETRY_BASE_DELAY_MS || "400", 10);
+const WP_SAVE_WAIT_TIMEOUT_MS = parseInt(process.env.WP_SAVE_WAIT_TIMEOUT_MS || "5000", 10);
 const PUBLIC_ZIP_BASE_URL = process.env.PUBLIC_ZIP_BASE_URL || "http://localhost:8080";
 const STAGED_DIR_ABS = path.resolve(process.env.STAGED_DIR || ".staged");
 const STAGED_TTL_SECONDS = parseInt(process.env.STAGED_TTL_SECONDS || "1800", 10);
@@ -82,6 +87,28 @@ const createStageTimer = (): {
     },
     timingsMs,
   };
+};
+
+
+const isRetryableNetworkError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("econnrefused") ||
+    message.includes("enotfound") ||
+    message.includes("etimedout") ||
+    message.includes("fetch failed") ||
+    message.includes("network")
+  );
+};
+
+const calcRetryDelayMs = (attempt: number): number => {
+  const backoff = Math.min(5000, WP_SAVE_RETRY_BASE_DELAY_MS * (2 ** Math.max(0, attempt - 1)));
+  const jitter = Math.floor(Math.random() * 150);
+  return backoff + jitter;
 };
 
 const buildTestFills = (fillKeys: string[]): Record<string, string> => {
@@ -309,13 +336,42 @@ const worker = new Worker(
       await job.updateProgress(95);
       jobLogger.info({ stage: "wp_save_from_url" }, "progress updated");
 
-      const saveResult = await saveOutzipFromUrl({
-        endpoint: job.data.save.endpoint,
-        presentationId: job.data.save.presentationId,
-        saveToken: job.data.save.saveToken,
-        outZipUrl,
-        timeoutMs: WP_SAVE_FROM_URL_TIMEOUT_MS,
+      await waitForHttp(job.data.save.endpoint, {
+        timeoutMs: WP_SAVE_WAIT_TIMEOUT_MS,
+        intervalMs: 250,
       });
+
+      let saveResult: Awaited<ReturnType<typeof saveOutzipFromUrl>> | null = null;
+      let lastNetworkError: unknown = null;
+      const maxRetries = Math.max(1, WP_SAVE_RETRIES);
+
+      for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+        try {
+          const current = await saveOutzipFromUrl({
+            endpoint: job.data.save.endpoint,
+            presentationId: job.data.save.presentationId,
+            saveToken: job.data.save.saveToken,
+            outZipUrl,
+            timeoutMs: WP_SAVE_FROM_URL_TIMEOUT_MS,
+          });
+
+          saveResult = current;
+          break;
+        } catch (error) {
+          lastNetworkError = error;
+          if (!isRetryableNetworkError(error) || attempt >= maxRetries) {
+            throw error;
+          }
+
+          const delayMs = calcRetryDelayMs(attempt);
+          jobLogger.warn({ attempt, maxRetries, delayMs, err: error }, "wp save network error, retrying");
+          await sleep(delayMs);
+        }
+      }
+
+      if (!saveResult) {
+        throw new Error(`WPSaveFromUrlNetworkFailed: ${String(lastNetworkError)}`);
+      }
 
       mark("wp_save_from_url");
 

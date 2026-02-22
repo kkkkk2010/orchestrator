@@ -193,6 +193,9 @@ unzip -p out/<jobId>.out.zip backgrounds/slide-2.png | wc -c
 - `STAGED_CLEANUP_ON_SUCCESS=true|false`
 - `STAGED_CLEANUP_DELAY_SECONDS=0`
 - `WP_SAVE_FROM_URL_TIMEOUT_MS=30000`
+- `WP_SAVE_RETRIES=10` (ретраи только для сетевых ошибок ECONNREFUSED/ENOTFOUND/ETIMEDOUT в `from_url`)
+- `WP_SAVE_RETRY_BASE_DELAY_MS=400` (экспоненциальный backoff + jitter, cap 5000ms)
+- `WP_SAVE_WAIT_TIMEOUT_MS=5000` (ожидание доступности endpoint перед запросом)
 - `BACKGROUND_GEN_TIMEOUT_MS=60000` (таймаут генерации всех background-слайдов; при превышении job падает с `BackgroundGenTimeout`)
 - `WP_FAIL_ON_UPLOAD_ERROR=true|false`
 
@@ -234,6 +237,17 @@ ls .tmp/mock-wp/123/received.out.zip
 Для отладки (чтобы URL жил дольше):
 - `STAGED_CLEANUP_ON_SUCCESS=false` (полагаться на TTL), или
 - `STAGED_CLEANUP_DELAY_SECONDS=<N>` чтобы удалить staged-файл с задержкой.
+
+
+### Dev-устойчивость при `npm run dev`
+
+В single-process dev-режиме (`concurrently` + `tsx watch`) API может кратко перезапускаться.
+Чтобы worker не падал на transient `ECONNREFUSED` в `wp_save_from_url`, orchestrator теперь:
+1) ждёт доступность endpoint (`waitForHttp`),
+2) делает ретраи только на сетевых ошибках с backoff/jitter,
+3) **не ретраит** обычные HTTP-ответы (4xx/5xx) по умолчанию.
+
+Это поведение безопасно и для production endpoint'ов: retry применяется только при сетевом сбое соединения.
 
 ### Продакшен заметка
 
