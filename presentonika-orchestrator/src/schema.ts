@@ -6,6 +6,11 @@ export const createJobSchema = z.object({
   topic: z.string().min(1),
   themeId: z.string().min(1),
   language: z.string().optional(),
+  debug: z
+    .object({
+      fills: z.record(z.string()).optional(),
+    })
+    .optional(),
   save: z.object({
     endpoint: z.string().min(1).url(),
     presentationId: z.number(),

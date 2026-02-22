@@ -78,6 +78,8 @@ If job is completed, response includes `returnValue` with:
 - `assemble.backgroundsPlannedCount`
 - `assemble.backgroundsReplacedCount`
 - `assemble.backgroundsMissing`
+- `assemble.chosenVariants`
+- `assemble.debugFillsApplied`
 - `upload` (attempted/ok/status/response*)
 
 ## Этап 3: локальная сборка out.zip
@@ -246,3 +248,60 @@ location /staged/ {
 ### Fallback режим
 
 Если нужен старый multipart-путь, установите `WP_SAVE_MODE=upload` — orchestrator использует прежнюю загрузку файла в `save.endpoint`.
+
+
+## Этап 9: auto choose variants (Hybrid MVP+)
+
+Теперь вариативность может выбираться автоматически через `map.json -> slides[N].choose`:
+
+### 1) Seed mode
+
+```json
+"choose": {
+  "mode": "seed",
+  "variants": ["A", "B"]
+}
+```
+
+Выбор детерминированный по `presentationId` + `slideIndex` и всегда повторяемый для одинаковых входных данных.
+
+### 2) Fill length mode
+
+```json
+"choose": {
+  "mode": "fillLength",
+  "key": "s4_bullets",
+  "threshold": 100,
+  "lt": "oneCol",
+  "gte": "twoCol"
+}
+```
+
+Если длина `fills[s4_bullets]` меньше порога — берётся `oneCol`, иначе `twoCol`.
+
+### debug.fills override в POST /jobs
+
+Можно принудительно подложить тексты и проверить правила без LLM:
+
+```json
+{
+  "presentationId": 123,
+  "userId": 55,
+  "topic": "Demo",
+  "themeId": "_example",
+  "debug": {
+    "fills": {
+      "s4_bullets": "Очень длинный текст ..."
+    }
+  },
+  "save": {
+    "endpoint": "http://localhost:8080/mock/wp-save-outzip-from-url",
+    "presentationId": 123,
+    "saveToken": "TOKEN"
+  }
+}
+```
+
+Результат выбора смотрите в:
+- `GET /jobs/:id -> returnValue.assemble.chosenVariants`
+- `GET /jobs/:id -> returnValue.assemble.debugFillsApplied`

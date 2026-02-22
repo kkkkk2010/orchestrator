@@ -85,13 +85,17 @@ const worker = new Worker(
     const imageSlots = extractImageSlots(doc);
     const slideCount = inferSlideCount(doc);
 
-    const fills = buildTestFills(fillKeys);
+    const generatedFills = buildTestFills(fillKeys);
+    const debugFillsRaw = job.data?.debug?.fills;
+    const debugFills = (debugFillsRaw && typeof debugFillsRaw === "object" ? debugFillsRaw : {}) as Record<string, string>;
+    const fills = { ...generatedFills, ...debugFills };
+    const debugFillsApplied = Object.keys(debugFills).length > 0;
     const map = await readThemeMap(themeId);
 
     await job.updateProgress(75);
     jobLogger.info({ stage: "apply_variants_fills" }, "progress updated");
 
-    const variantsStats = applyVariants(doc, map, { presentationId }, {
+    const variantsStats = applyVariants(doc, map, { presentationId }, fills, {
       onDropAtOutOfRange: ({ slideIndex, badIndex }) => {
         jobLogger.warn({ slideIndex, badIndex }, "dropAt index out of range");
       },
@@ -339,6 +343,8 @@ const worker = new Worker(
         missingKeys: fillsStats.missingKeys,
         droppedCount: variantsStats.droppedCount,
         droppedAtCount: variantsStats.droppedAtCount,
+        chosenVariants: variantsStats.chosenVariants,
+        debugFillsApplied,
         imagePlannedCount: imagePlan.plannedCount,
         imageReplacedCount,
         imageMissing: imageMissingCapped,
@@ -359,6 +365,8 @@ const worker = new Worker(
         replacedCount: fillsStats.replacedCount,
         droppedCount: variantsStats.droppedCount,
         droppedAtCount: variantsStats.droppedAtCount,
+        chosenVariants: variantsStats.chosenVariants,
+        debugFillsApplied,
         imagePlannedCount: imagePlan.plannedCount,
         imageReplacedCount,
         imageMissingCount: imageMissing.length,

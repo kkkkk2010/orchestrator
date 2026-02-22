@@ -1,3 +1,5 @@
+import { chooseVariant } from "./chooseVariant";
+
 export type SeedContext = {
   presentationId: number;
 };
@@ -6,6 +8,7 @@ export type ApplyVariantsStats = {
   droppedCount: number;
   droppedAtCount: number;
   droppedIds: string[];
+  chosenVariants: Record<string, string>;
 };
 
 type VariantRule = {
@@ -16,6 +19,7 @@ type VariantRule = {
 type SlideRule = {
   variants?: Record<string, VariantRule>;
   imageAt?: Record<string, string>;
+  choose?: unknown;
 };
 
 type VariantsMap = {
@@ -27,38 +31,6 @@ type ApplyVariantsOptions = {
 };
 
 const DROP_IDS_LIMIT = 50;
-
-const hashString = (value: string): number => {
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
-  }
-  return hash;
-};
-
-const pickVariantName = (presentationId: number, slideIndex1Based: number): "A" | "B" => {
-  const hash = hashString(`${presentationId}${slideIndex1Based}`);
-  return hash % 2 === 0 ? "A" : "B";
-};
-
-const getSlideRule = (map: VariantsMap, slideIndex1Based: number): SlideRule | null => {
-  const slides = map.slides;
-  if (!slides) {
-    return null;
-  }
-
-  return slides[String(slideIndex1Based)] ?? null;
-};
-
-const getVariantRule = (map: VariantsMap, presentationId: number, slideIndex1Based: number): VariantRule | null => {
-  const slideRule = getSlideRule(map, slideIndex1Based);
-  if (!slideRule?.variants) {
-    return null;
-  }
-
-  const variantName = pickVariantName(presentationId, slideIndex1Based);
-  return slideRule.variants[variantName] ?? null;
-};
 
 const applyDropAtToSlide = (
   slideNode: unknown,
@@ -158,9 +130,11 @@ export const applyVariants = (
   doc: unknown,
   map: unknown,
   seedContext: SeedContext,
+  fills: Record<string, string>,
   options?: ApplyVariantsOptions
 ): ApplyVariantsStats => {
   const droppedIds: string[] = [];
+  const chosenVariants: Record<string, string> = {};
   let droppedCount = 0;
   let droppedAtCount = 0;
 
@@ -169,10 +143,28 @@ export const applyVariants = (
 
   for (let slideIdx0 = 0; slideIdx0 < slideContainers.length; slideIdx0 += 1) {
     const slideIndex1Based = slideIdx0 + 1;
-    const variantRule = getVariantRule(parsedMap, seedContext.presentationId, slideIndex1Based);
+    const mapSlide = parsedMap.slides?.[String(slideIndex1Based)];
+    if (!mapSlide?.variants) {
+      continue;
+    }
+
+    const chosen = chooseVariant({
+      slideIndex1: slideIndex1Based,
+      mapSlide,
+      presentationId: seedContext.presentationId,
+      fills,
+    });
+
+    if (!chosen.chosen) {
+      continue;
+    }
+
+    const variantRule = mapSlide.variants[chosen.chosen];
     if (!variantRule) {
       continue;
     }
+
+    chosenVariants[String(slideIndex1Based)] = chosen.chosen;
 
     if (Array.isArray(variantRule.dropAt)) {
       const removedByIndex = applyDropAtToSlide(slideContainers[slideIdx0], variantRule.dropAt, slideIndex1Based, options);
@@ -191,5 +183,6 @@ export const applyVariants = (
     droppedCount,
     droppedAtCount,
     droppedIds,
+    chosenVariants,
   };
 };

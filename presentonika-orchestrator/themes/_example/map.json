@@ -8,6 +8,29 @@
         "A": { "dropAt": [2] },
         "B": { "dropAt": [2] }
       }
+    },
+    "3": {
+      "choose": {
+        "mode": "seed",
+        "variants": ["A", "B"]
+      },
+      "variants": {
+        "A": { "dropAt": [] },
+        "B": { "dropAt": [] }
+      }
+    },
+    "4": {
+      "choose": {
+        "mode": "fillLength",
+        "key": "s4_bullets",
+        "threshold": 100,
+        "lt": "oneCol",
+        "gte": "twoCol"
+      },
+      "variants": {
+        "oneCol": { "dropAt": [2] },
+        "twoCol": { "dropAt": [1] }
+      }
     }
   }
 }
