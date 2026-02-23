@@ -425,7 +425,7 @@ npm run theme:validate -- teacher-dark
 - что `doc.json` содержит ровно 10 слайдов (error)
 - корректность `map.json` индексов/правил (`imageAt`, `dropAt`, `choose`)
 - предупреждает о недостающих skeleton fill-keys
-- предупреждает, если не найдены `backgrounds/slide-N.png`
+- предупреждает только при неожиданном naming для `slide.background.src` (для runtime background наличие файла в template не требуется)
 
 Exit code:
 - `0` если нет errors

@@ -88,17 +88,28 @@ const run = async (): Promise<void> => {
     }
   }
 
-  // background naming warning
+  // background naming warning (do not require file presence in template zip)
   slides.forEach((slide, idx) => {
-    const elements = Array.isArray((slide as { elements?: unknown })?.elements) ? (slide as { elements: unknown[] }).elements : [];
-    const expected = `backgrounds/slide-${idx + 1}.png`;
-    const hasExpected = elements.some((el) => {
-      const src = (el as { src?: unknown })?.src;
-      return typeof src === "string" && src === expected;
-    });
-    if (!hasExpected) {
-      warnings.push(`slide ${idx + 1}: background src '${expected}' not found`);
+    const slideIndex1 = idx + 1;
+    const slideRecord = (slide && typeof slide === "object" ? slide : {}) as Record<string, unknown>;
+    const background = (slideRecord.background && typeof slideRecord.background === "object"
+      ? slideRecord.background
+      : {}) as Record<string, unknown>;
+
+    if (background.type !== "image") {
+      return;
     }
+
+    const src = typeof background.src === "string" ? background.src : "";
+    const matched = src.match(/^backgrounds\/slide-(\d+)\.png$/);
+
+    if (matched && Number.parseInt(matched[1], 10) === slideIndex1) {
+      return;
+    }
+
+    warnings.push(
+      `slide ${slideIndex1}: background image src has unexpected naming '${src || "<empty>"}', expected 'backgrounds/slide-${slideIndex1}.png'`
+    );
   });
 
   const mapSlides = (map.slides && typeof map.slides === "object" ? map.slides : {}) as Record<string, unknown>;
