@@ -1,0 +1,19 @@
+{
+  "id": "teacher-dark",
+  "name": "Teacher Dark",
+  "version": 1,
+  "palette": {
+    "bg1": "#0D1326",
+    "bg2": "#203A82",
+    "accent": "#6FE8FF"
+  },
+  "background": {
+    "blobs": 3,
+    "grain": 0.12,
+    "gradientStrength": 1.4,
+    "blobAlphaMin": 0.2,
+    "blobAlphaMax": 0.36,
+    "vignette": 0.2,
+    "accentBlobChance": 0.6
+  }
+}

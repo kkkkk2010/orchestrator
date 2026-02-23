@@ -385,3 +385,48 @@ Worker теперь валидирует лимиты:
 2. Проверка лимита out zip:
    - временно выставьте `MAX_OUTZIP_BYTES_LOCAL=1000000` (1MB);
    - выполните job и убедитесь, что задача падает с `OutZipTooLarge`.
+
+## Этап 11: Teacher Skeleton + Theme tools
+
+Добавлены 3 teacher-theme packs (скелеты):
+- `themes/teacher-dark`
+- `themes/teacher-light`
+- `themes/teacher-bright`
+
+Каждый pack содержит:
+- `theme.json`
+- `map.json` (choose/variants scaffold)
+- `meta.json`
+- `decor/` (placeholder)
+- `template.out.zip` (временный placeholder, сейчас скопирован из `_example`; заменить на реальный teacher 10-slide template)
+
+### Teacher skeleton spec
+
+Полная спецификация 10 слайдов, ключей и правил лежит в:
+- `docs/teacher-skeleton.md`
+
+### Tools
+
+Inspect структуры doc по слайдам/элементам:
+
+```bash
+npm run theme:inspect -- teacher-dark
+```
+
+Validate theme pack:
+
+```bash
+npm run theme:validate -- teacher-dark
+```
+
+`theme:validate` проверяет:
+- required files/theme pack structure
+- размер template zip (`MAX_TEMPLATE_ZIP_BYTES`)
+- что `doc.json` содержит ровно 10 слайдов (error)
+- корректность `map.json` индексов/правил (`imageAt`, `dropAt`, `choose`)
+- предупреждает о недостающих skeleton fill-keys
+- предупреждает, если не найдены `backgrounds/slide-N.png`
+
+Exit code:
+- `0` если нет errors
+- `1` если есть errors (warnings допустимы)
