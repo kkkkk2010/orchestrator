@@ -1,4 +1,4 @@
-import dotenv from "dotenv";
+import "dotenv/config";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { Worker } from "bullmq";
@@ -18,8 +18,6 @@ import { saveOutzipFromUrl } from "./wp/saveOutzipFromUrl";
 import { waitForHttp } from "./net/waitForHttp";
 import { sleep } from "./util/sleep";
 import { buildStagedUrl, createStagedFile, deleteStagedRecord } from "./staged/stagedStore";
-
-dotenv.config();
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;

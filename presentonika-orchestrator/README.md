@@ -430,3 +430,69 @@ npm run theme:validate -- teacher-dark
 Exit code:
 - `0` если нет errors
 - `1` если есть errors (warnings допустимы)
+
+## Production deploy (Docker Compose)
+
+For VPS deployment (same host as `editor.presentonika.ru`) use `docker-compose.prod.yml` with 3 services:
+- `redis`
+- `orchestrator-api` (HTTP API)
+- `orchestrator-worker` (BullMQ worker)
+
+### 1) Prepare env
+
+```bash
+cp .env.prod.example .env
+```
+
+Key production defaults:
+- `ENABLE_MOCK_WP=false`
+- `STAGED_ENABLE_SERVER=true`
+- `ENABLE_CLEANUP=true`
+
+### 2) Build and run
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+### 3) Health check
+
+```bash
+curl -s http://127.0.0.1:8080/health
+```
+
+### 4) Nginx snippet (editor domain)
+
+Proxy staged files from editor nginx to orchestrator API port:
+
+```nginx
+location /staged/ {
+  proxy_pass http://127.0.0.1:8080/staged/;
+}
+```
+
+If needed, you can also proxy API routes similarly.
+
+### 5) Local production-like verification
+
+```bash
+# create job
+curl -s -X POST http://127.0.0.1:8080/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "presentationId": 123,
+    "userId": 55,
+    "topic": "Prod test",
+    "themeId": "_example",
+    "save": {
+      "endpoint": "http://127.0.0.1:8080/mock/wp-save-outzip-from-url",
+      "presentationId": 123,
+      "saveToken": "TOKEN"
+    }
+  }'
+
+# poll status
+curl -s http://127.0.0.1:8080/jobs/<jobId>
+```
+
+For staged URL testing, set `STAGED_CLEANUP_ON_SUCCESS=false` temporarily.

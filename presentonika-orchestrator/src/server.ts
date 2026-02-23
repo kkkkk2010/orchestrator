@@ -1,4 +1,4 @@
-import dotenv from "dotenv";
+import "dotenv/config";
 import Fastify from "fastify";
 import multipart from "@fastify/multipart";
 import path from "node:path";
@@ -8,8 +8,6 @@ import { createJobSchema } from "./schema";
 import { logger } from "./logger";
 import { registerStagedRoutes } from "./staged/stagedRoutes";
 import { startCleanupService } from "./cleanup/cleanupService";
-
-dotenv.config();
 
 const port = Number(process.env.PORT || 8080);
 const mockWpEnabled = process.env.ENABLE_MOCK_WP === "true";
