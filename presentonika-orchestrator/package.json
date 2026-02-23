@@ -34,6 +34,7 @@
     "tsx": "^4.19.0",
     "typescript": "^5.5.4",
     "@types/yauzl": "^2.10.3",
-    "@types/yazl": "^2.4.5"
+    "@types/yazl": "^2.4.5",
+    "@types/pngjs": "^6.0.5"
   }
 }

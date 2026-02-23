@@ -4,8 +4,10 @@ import { logger } from "../logger";
 
 const nowMs = (): number => Date.now();
 
-const isOlderThanTtl = (mtimeMs: number, ttlMs: number): boolean => {
-  return nowMs() - mtimeMs > ttlMs;
+const toNum = (value: number | bigint): number => (typeof value === "bigint" ? Number(value) : value);
+
+const isOlderThanTtl = (mtimeMs: number | bigint, ttlMs: number): boolean => {
+  return nowMs() - toNum(mtimeMs) > ttlMs;
 };
 
 const listDirEntries = async (dirPath: string): Promise<string[]> => {

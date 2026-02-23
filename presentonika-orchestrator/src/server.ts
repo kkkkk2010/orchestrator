@@ -5,7 +5,6 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { getQueue, getQueueRedisConnection } from "./queue";
 import { createJobSchema } from "./schema";
-import { logger } from "./logger";
 import { registerStagedRoutes } from "./staged/stagedRoutes";
 import { startCleanupService } from "./cleanup/cleanupService";
 
@@ -13,7 +12,7 @@ const port = Number(process.env.PORT || 8080);
 const mockWpEnabled = process.env.ENABLE_MOCK_WP === "true";
 const stagedServerEnabled = process.env.STAGED_ENABLE_SERVER !== "false";
 const stagedDirAbs = path.resolve(process.env.STAGED_DIR || ".staged");
-const app = Fastify({ logger });
+const app = Fastify({ logger: { level: process.env.LOG_LEVEL || "info" } });
 
 
 const stopCleanupService = startCleanupService({
