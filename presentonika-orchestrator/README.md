@@ -496,3 +496,112 @@ curl -s http://127.0.0.1:8080/jobs/<jobId>
 ```
 
 For staged URL testing, set `STAGED_CLEANUP_ON_SUCCESS=false` temporarily.
+
+## Public nginx exposure for `/orchestrator/*` + MVP+ security
+
+Paste the following blocks into existing `server { server_name editor.presentonika.ru; ... }`.
+Keep editor app on `/` proxy as-is.
+
+```nginx
+# Orchestrator API under /orchestrator/
+location ^~ /orchestrator/ {
+  proxy_pass http://127.0.0.1:8080/;
+  proxy_http_version 1.1;
+
+  proxy_set_header Host $host;
+  proxy_set_header X-Real-IP $remote_addr;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+
+  proxy_connect_timeout 10s;
+  proxy_send_timeout 300s;
+  proxy_read_timeout 300s;
+  send_timeout 300s;
+
+  proxy_buffering off;
+  proxy_request_buffering off;
+
+  add_header Cache-Control "no-store" always;
+}
+
+# Staged zip streaming (keep enabled)
+location ^~ /staged/ {
+  proxy_pass http://127.0.0.1:8080/staged/;
+  proxy_http_version 1.1;
+
+  proxy_set_header Host $host;
+  proxy_set_header X-Real-IP $remote_addr;
+  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $scheme;
+
+  proxy_connect_timeout 10s;
+  proxy_send_timeout 300s;
+  proxy_read_timeout 300s;
+
+  proxy_buffering off;
+  add_header Cache-Control "no-store" always;
+}
+```
+
+Notes:
+- trailing slash in `proxy_pass http://127.0.0.1:8080/;` is required for correct `/orchestrator/...` rewrite.
+- CORS is not required for server-to-server WordPress calls.
+
+### Security model (first 100 users)
+
+`/jobs` and `/jobs/:id` require header:
+
+- `X-Orchestrator-Key: <ORCHESTRATOR_PUBLIC_KEY>`
+
+If missing/wrong:
+
+- `401 { "error": "unauthorized" }`
+
+`POST /jobs` also has per-IP rate-limit (Redis fixed window):
+
+- `JOBS_RATE_LIMIT_MAX=30`
+- `JOBS_RATE_LIMIT_WINDOW_SECONDS=300`
+
+If exceeded:
+
+- `429 { "error": "rate_limited" }`
+- `Retry-After: <seconds>`
+
+`/health` remains public.
+`/staged/:name` remains token-protected via staged signed token.
+
+### Apply commands
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+cd /path/to/presentonika-orchestrator
+cp .env.prod.example .env   # if needed
+# set ORCHESTRATOR_PUBLIC_KEY to a long random value
+
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+### Minimal tests
+
+```bash
+# 1) health open
+curl -i https://editor.presentonika.ru/orchestrator/health
+
+# 2) /jobs without key => 401
+curl -i -X POST https://editor.presentonika.ru/orchestrator/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"presentationId":1,"userId":1,"topic":"x","themeId":"_example","save":{"endpoint":"https://example.com","presentationId":1,"saveToken":"t"}}'
+
+# 3) /jobs with key => accepted
+curl -i -X POST https://editor.presentonika.ru/orchestrator/jobs \
+  -H 'X-Orchestrator-Key: YOUR_KEY' \
+  -H 'Content-Type: application/json' \
+  -d '{"presentationId":1,"userId":1,"topic":"x","themeId":"_example","save":{"endpoint":"https://example.com","presentationId":1,"saveToken":"t"}}'
+
+# 4) /jobs/:id with key
+curl -i https://editor.presentonika.ru/orchestrator/jobs/<jobId> \
+  -H 'X-Orchestrator-Key: YOUR_KEY'
+
+# 5) staged with signed token
+curl -i 'https://editor.presentonika.ru/staged/<name>.out.zip?t=<token>'
+```

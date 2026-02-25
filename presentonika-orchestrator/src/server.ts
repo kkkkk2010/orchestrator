@@ -12,8 +12,15 @@ const port = Number(process.env.PORT || 8080);
 const mockWpEnabled = process.env.ENABLE_MOCK_WP === "true";
 const stagedServerEnabled = process.env.STAGED_ENABLE_SERVER !== "false";
 const stagedDirAbs = path.resolve(process.env.STAGED_DIR || ".staged");
-const app = Fastify({ logger: { level: process.env.LOG_LEVEL || "info" } });
+const ORCHESTRATOR_PUBLIC_KEY = process.env.ORCHESTRATOR_PUBLIC_KEY || "";
+const JOBS_RATE_LIMIT_MAX = Number.parseInt(process.env.JOBS_RATE_LIMIT_MAX || "30", 10);
+const JOBS_RATE_LIMIT_WINDOW_SECONDS = Number.parseInt(process.env.JOBS_RATE_LIMIT_WINDOW_SECONDS || "300", 10);
 
+const app = Fastify({
+  logger: { level: process.env.LOG_LEVEL || "info" },
+  trustProxy: true,
+  bodyLimit: 2 * 1024 * 1024,
+});
 
 const stopCleanupService = startCleanupService({
   tmpDirAbs: path.resolve(".tmp"),
@@ -37,6 +44,38 @@ if (stagedServerEnabled) {
   });
 }
 
+const requirePublicKey = (request: { headers: Record<string, unknown>; ip: string }, reply: { status: (code: number) => { send: (payload: unknown) => unknown }; }): boolean => {
+  const raw = request.headers["x-orchestrator-key"];
+  const headerValue = Array.isArray(raw) ? String(raw[0] ?? "") : String(raw ?? "");
+
+  if (!ORCHESTRATOR_PUBLIC_KEY || headerValue !== ORCHESTRATOR_PUBLIC_KEY) {
+    app.log.warn({ ip: request.ip, path: "auth", hasKey: Boolean(headerValue) }, "unauthorized orchestrator api request");
+    void reply.status(401).send({ error: "unauthorized" });
+    return false;
+  }
+
+  return true;
+};
+
+const checkJobsRateLimit = async (ip: string): Promise<{ allowed: boolean; retryAfterSec: number }> => {
+  const redis = getQueueRedisConnection();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const windowSec = Math.max(1, JOBS_RATE_LIMIT_WINDOW_SECONDS);
+  const windowStart = Math.floor(nowSec / windowSec) * windowSec;
+  const key = `rl:jobs:${ip}:${windowStart}`;
+
+  const count = await redis.incr(key);
+  if (count === 1) {
+    await redis.expire(key, windowSec);
+  }
+
+  const retryAfterSec = Math.max(1, windowSec - (nowSec % windowSec));
+  return {
+    allowed: count <= Math.max(1, JOBS_RATE_LIMIT_MAX),
+    retryAfterSec,
+  };
+};
+
 app.get("/health", async () => ({
   ok: true,
   service: "orchestrator",
@@ -44,6 +83,17 @@ app.get("/health", async () => ({
 }));
 
 app.post("/jobs", async (request, reply) => {
+  if (!requirePublicKey(request, reply)) {
+    return;
+  }
+
+  const ip = request.ip || "unknown";
+  const rate = await checkJobsRateLimit(ip);
+  if (!rate.allowed) {
+    request.log.warn({ ip, retryAfterSec: rate.retryAfterSec }, "jobs rate limit exceeded");
+    return reply.header("Retry-After", String(rate.retryAfterSec)).status(429).send({ error: "rate_limited" });
+  }
+
   const parsed = createJobSchema.safeParse(request.body);
 
   if (!parsed.success) {
@@ -63,7 +113,7 @@ app.post("/jobs", async (request, reply) => {
     removeOnFail: { age: 86400 },
   });
 
-  request.log.info({ jobId }, "job queued");
+  request.log.info({ jobId, ip }, "job queued");
 
   return {
     jobId,
@@ -72,6 +122,10 @@ app.post("/jobs", async (request, reply) => {
 });
 
 app.get<{ Params: { id: string } }>("/jobs/:id", async (request, reply) => {
+  if (!requirePublicKey(request, reply)) {
+    return;
+  }
+
   const { id } = request.params;
   const job = await getQueue().getJob(id);
 
