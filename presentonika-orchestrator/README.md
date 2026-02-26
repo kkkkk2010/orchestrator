@@ -551,7 +551,7 @@ Notes:
 
 `/jobs` and `/jobs/:id` require header:
 
-- `X-Orchestrator-Key: <ORCHESTRATOR_PUBLIC_KEY>`
+- `X-Orchestrator-Key: <PRESENTONIKA_ORCHESTRATOR_KEY>`
 
 If missing/wrong:
 
@@ -576,7 +576,7 @@ If exceeded:
 sudo nginx -t && sudo systemctl reload nginx
 cd /path/to/presentonika-orchestrator
 cp .env.prod.example .env   # if needed
-# set ORCHESTRATOR_PUBLIC_KEY to a long random value
+# set PRESENTONIKA_ORCHESTRATOR_KEY to a long random value
 
 docker compose -f docker-compose.prod.yml up -d --build
 ```

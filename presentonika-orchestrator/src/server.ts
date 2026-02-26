@@ -12,7 +12,7 @@ const port = Number(process.env.PORT || 8080);
 const mockWpEnabled = process.env.ENABLE_MOCK_WP === "true";
 const stagedServerEnabled = process.env.STAGED_ENABLE_SERVER !== "false";
 const stagedDirAbs = path.resolve(process.env.STAGED_DIR || ".staged");
-const ORCHESTRATOR_PUBLIC_KEY = process.env.ORCHESTRATOR_PUBLIC_KEY || "";
+const ORCHESTRATOR_PUBLIC_KEY = process.env.PRESENTONIKA_ORCHESTRATOR_KEY || process.env.ORCHESTRATOR_PUBLIC_KEY || "";
 const JOBS_RATE_LIMIT_MAX = Number.parseInt(process.env.JOBS_RATE_LIMIT_MAX || "30", 10);
 const JOBS_RATE_LIMIT_WINDOW_SECONDS = Number.parseInt(process.env.JOBS_RATE_LIMIT_WINDOW_SECONDS || "300", 10);
 
