@@ -605,3 +605,39 @@ curl -i https://editor.presentonika.ru/orchestrator/jobs/<jobId> \
 # 5) staged with signed token
 curl -i 'https://editor.presentonika.ru/staged/<name>.out.zip?t=<token>'
 ```
+
+## Этап: ImagePlan v1
+
+Теперь orchestrator всегда добавляет в корень `out.zip` файл `imagePlan.json`.
+
+Также best-effort копия сохраняется в `.tmp/<jobId>/imagePlan.json` для отладки.
+
+Формат (`version=1`):
+- `presentationId`, `themeId`, `topic`, `language`, `createdAt`
+- `slots[]` из `map.json -> slides[N].imageAt`, где:
+  - `slide` — 1-based
+  - `element` — 0-based
+  - `slotId` — значение из `imageAt`
+  - `kind` — `hero|photo|icon|other`
+  - `query`, `hint` — базовые эвристики
+
+Если в `map.json` нет `imageAt`, `imagePlan.json` всё равно создаётся, но `slots: []`.
+
+### Manual проверка
+
+1) Создать job (`themeId: teacher-dark` или `_example`).
+2) Дождаться `state=completed`.
+3) Проверить, что в `out/<jobId>.out.zip` есть `imagePlan.json`:
+
+```bash
+unzip -l out/<jobId>.out.zip | rg imagePlan.json
+```
+
+4) Посмотреть содержимое:
+
+```bash
+unzip -p out/<jobId>.out.zip imagePlan.json | jq .
+```
+
+5) Убедиться, что `version=1`, а `slots[]` соответствует `map.json -> imageAt`.
+   Для тем без `imageAt`: `slots` должен быть пустым массивом.

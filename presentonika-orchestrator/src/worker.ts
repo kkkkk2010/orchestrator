@@ -11,6 +11,7 @@ import { applyVariants } from "./templates/applyVariants";
 import { applyFills } from "./templates/applyFills";
 import { assembleZip } from "./templates/assembleZip";
 import { planImageReplacements } from "./images/planImageReplacements";
+import { buildImagePlanFromMap } from "./images/imagePlan";
 import { generateBackgrounds } from "./backgrounds/generateBackgrounds";
 import { normalizeBackgroundTheme } from "./backgrounds/theme";
 import { uploadOutzip } from "./wp/uploadOutzip";
@@ -183,6 +184,21 @@ const worker = new Worker(
     const fillsStats = applyFills(doc, fills);
     mark("apply_variants_fills");
 
+
+    const imagePlanDocument = buildImagePlanFromMap({
+      map,
+      presentationId,
+      themeId,
+      topic: typeof job.data?.topic === "string" ? job.data.topic : "",
+      language: typeof job.data?.language === "string" ? job.data.language : null,
+    });
+
+    const imagePlanJsonString = JSON.stringify(imagePlanDocument, null, 2);
+    const imagePlanTmpPath = path.resolve(".tmp", jobId, "imagePlan.json");
+    await fs.writeFile(imagePlanTmpPath, imagePlanJsonString).catch((error) => {
+      jobLogger.warn({ err: error, imagePlanTmpPath }, "unable to persist imagePlan tmp file");
+    });
+
     await job.updateProgress(80);
     jobLogger.info({ stage: "prepare_images" }, "progress updated");
 
@@ -235,6 +251,9 @@ const worker = new Worker(
       replacements: {
         ...imagePlan.replacements,
         ...backgrounds.replacements,
+      },
+      extraEntries: {
+        "imagePlan.json": Buffer.from(imagePlanJsonString, "utf8"),
       },
     });
     mark("assemble_zip");
@@ -484,6 +503,8 @@ const worker = new Worker(
         chosenVariants: variantsStats.chosenVariants,
         debugFillsApplied,
         imagePlannedCount: imagePlan.plannedCount,
+        imagePlanSlotsCount: imagePlanDocument.slots.length,
+        imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
         imageReplacedCount,
         imageMissing: imageMissingCapped,
         backgroundsPlannedCount: slideCount,
@@ -517,6 +538,8 @@ const worker = new Worker(
         chosenVariants: variantsStats.chosenVariants,
         debugFillsApplied,
         imagePlannedCount: imagePlan.plannedCount,
+        imagePlanSlotsCount: imagePlanDocument.slots.length,
+        imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
         imageReplacedCount,
         imageMissingCount: imageMissing.length,
         backgroundsPlannedCount: slideCount,

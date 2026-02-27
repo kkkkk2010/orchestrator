@@ -11,6 +11,7 @@ type AssembleZipInput = {
   jobId: string;
   updatedDocJsonString: string;
   replacements?: Record<string, string>;
+  extraEntries?: Record<string, Buffer>;
 };
 
 export type AssembleZipResult = {
@@ -59,6 +60,7 @@ export const assembleZip = async ({
   jobId,
   updatedDocJsonString,
   replacements = {},
+  extraEntries = {},
 }: AssembleZipInput): Promise<AssembleZipResult> => {
   const outDirPath = path.resolve(OUT_DIR);
   await fsPromises.mkdir(outDirPath, { recursive: true });
@@ -180,6 +182,9 @@ export const assembleZip = async ({
 
       try {
         addMissingBackgroundEntries();
+        for (const [entryName, buffer] of Object.entries(extraEntries)) {
+          zipWriter.addBuffer(buffer, entryName);
+        }
       } catch (error) {
         fail(error instanceof Error ? error : new Error(String(error)));
         return;
