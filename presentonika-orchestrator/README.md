@@ -619,9 +619,35 @@ curl -i 'https://editor.presentonika.ru/staged/<name>.out.zip?t=<token>'
   - `element` — 0-based
   - `slotId` — значение из `imageAt`
   - `kind` — `hero|photo|icon|other`
-  - `query`, `hint` — базовые эвристики
+  - `query`, `hint` — поисковая и UI-эвристика
+  - optional поля (backward compatible):
+    - `styleHint?: string`
+    - `negative?: string[]`
+    - `aspect?: "portrait"|"landscape"|"square"|"any"`
+    - `priority?: number` (1..5)
+    - `sourcePolicy?: { mode: "user_confirmed", requireSourceOpen?: boolean }`
+    - `suggestedCount?: number` (5..10)
 
 Если в `map.json` нет `imageAt`, `imagePlan.json` всё равно создаётся, но `slots: []`.
+
+Пример slot:
+
+```json
+{
+  "slotId": "s1_hero",
+  "slide": 1,
+  "element": 2,
+  "kind": "hero",
+  "query": "Стили речи обложка слайд 1",
+  "hint": "Подбери изображение: обложка; стиль: minimal; избегать: watermark, nsfw, lowres",
+  "styleHint": "minimal",
+  "negative": ["watermark", "nsfw", "lowres"],
+  "aspect": "landscape",
+  "priority": 5,
+  "sourcePolicy": { "mode": "user_confirmed", "requireSourceOpen": true },
+  "suggestedCount": 8
+}
+```
 
 ### Manual проверка
 

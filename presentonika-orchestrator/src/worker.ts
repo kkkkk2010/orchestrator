@@ -185,19 +185,33 @@ const worker = new Worker(
     mark("apply_variants_fills");
 
 
-    const imagePlanDocument = buildImagePlanFromMap({
-      map,
-      presentationId,
-      themeId,
-      topic: typeof job.data?.topic === "string" ? job.data.topic : "",
-      language: typeof job.data?.language === "string" ? job.data.language : null,
-    });
-
-    const imagePlanJsonString = JSON.stringify(imagePlanDocument, null, 2);
     const imagePlanTmpPath = path.resolve(".tmp", jobId, "imagePlan.json");
-    await fs.writeFile(imagePlanTmpPath, imagePlanJsonString).catch((error) => {
-      jobLogger.warn({ err: error, imagePlanTmpPath }, "unable to persist imagePlan tmp file");
-    });
+    let imagePlanDocument: ReturnType<typeof buildImagePlanFromMap> | null = null;
+    let imagePlanJsonString: string | null = null;
+    let imagePlanIncluded = false;
+
+    try {
+      imagePlanDocument = buildImagePlanFromMap({
+        map,
+        doc,
+        presentationId,
+        themeId,
+        topic: typeof job.data?.topic === "string" ? job.data.topic : "",
+        language: typeof job.data?.language === "string" ? job.data.language : null,
+      });
+
+      imagePlanJsonString = JSON.stringify(imagePlanDocument, null, 2);
+      imagePlanIncluded = true;
+
+      await fs.writeFile(imagePlanTmpPath, imagePlanJsonString).catch((error) => {
+        jobLogger.warn({ err: error, imagePlanTmpPath }, "unable to persist imagePlan tmp file");
+      });
+    } catch (error) {
+      imagePlanIncluded = false;
+      imagePlanDocument = null;
+      imagePlanJsonString = null;
+      jobLogger.warn({ err: error }, "unable to build imagePlan json");
+    }
 
     await job.updateProgress(80);
     jobLogger.info({ stage: "prepare_images" }, "progress updated");
@@ -252,9 +266,11 @@ const worker = new Worker(
         ...imagePlan.replacements,
         ...backgrounds.replacements,
       },
-      extraEntries: {
-        "imagePlan.json": Buffer.from(imagePlanJsonString, "utf8"),
-      },
+      extraEntries: imagePlanJsonString
+        ? {
+            "imagePlan.json": Buffer.from(imagePlanJsonString, "utf8"),
+          }
+        : {},
     });
     mark("assemble_zip");
 
@@ -503,7 +519,9 @@ const worker = new Worker(
         chosenVariants: variantsStats.chosenVariants,
         debugFillsApplied,
         imagePlannedCount: imagePlan.plannedCount,
-        imagePlanSlotsCount: imagePlanDocument.slots.length,
+        imagePlanVersion: 1,
+        imagePlanIncluded,
+        imagePlanSlotsCount: imagePlanDocument ? imagePlanDocument.slots.length : 0,
         imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
         imageReplacedCount,
         imageMissing: imageMissingCapped,
@@ -538,7 +556,9 @@ const worker = new Worker(
         chosenVariants: variantsStats.chosenVariants,
         debugFillsApplied,
         imagePlannedCount: imagePlan.plannedCount,
-        imagePlanSlotsCount: imagePlanDocument.slots.length,
+        imagePlanVersion: 1,
+        imagePlanIncluded,
+        imagePlanSlotsCount: imagePlanDocument ? imagePlanDocument.slots.length : 0,
         imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
         imageReplacedCount,
         imageMissingCount: imageMissing.length,
