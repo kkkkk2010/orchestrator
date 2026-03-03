@@ -1,0 +1,111 @@
+import type { LLMGenerateInput } from "./LLMClient";
+
+export const buildSystemPrompt = (): string => {
+  return [
+    "Ты помощник-методист и редактор, который делает текст для учебной презентации.",
+    "Твоя задача: сгенерировать контент слайдов (fills) и подсказки для подбора изображений (imagePlanPatch).",
+    "Верни СТРОГО JSON по схеме responseFormat.",
+    "Никакого текста вне JSON.",
+  ].join(" ");
+};
+
+const summarizeKey = (key: string): string => {
+  if (key.includes("goals")) return `${key}: цели урока`;
+  if (key.includes("plan")) return `${key}: план урока`;
+  if (key.includes("hook")) return `${key}: вовлекающий блок`;
+  if (key.includes("bullets")) return `${key}: тезисы списком`;
+  if (key.includes("summary")) return `${key}: краткое резюме`;
+  if (key.includes("homework")) return `${key}: домашнее задание`;
+  if (key.includes("sources")) return `${key}: источники`;
+  return `${key}: текст слайда`;
+};
+
+const buildRagRuleHints = (input: LLMGenerateInput): string[] => {
+  if (!input.rag) {
+    return [];
+  }
+
+  return [
+    "Сначала используй факты из приложенных фрагментов источников.",
+    "Если фрагментов нет или их недостаточно, ответь на основе своих знаний без выдуманных ссылок [n].",
+    "Ссылки [n] ставь только когда реально используешь соответствующий источник.",
+    "Для s10_sources собери ссылки только на основе citations/sources: source_uri + page + fragment_id.",
+  ];
+};
+
+const buildRagContext = (input: LLMGenerateInput): string | undefined => {
+  if (!input.rag) {
+    return undefined;
+  }
+
+  const miniPrompt = input.rag.miniPrompt ||
+    "Сначала используй информацию из ИСТОЧНИКОВ; если информации не хватает — дополни ответ своими знаниями без выдуманных ссылок.";
+
+  if (input.rag.contextText) {
+    return `RAG_MINI_PROMPT:\n${miniPrompt}\n\nИСТОЧНИКИ (цитировать как [1], [2] ...):\n${input.rag.contextText}`;
+  }
+
+  if (input.rag.answer && input.rag.sources?.length) {
+    const sourcesText = input.rag.sources
+      .map((source) => {
+        const page = typeof source.page === "number" ? ` (p.${source.page})` : "";
+        return `[${source.n}] ${source.source_uri}${page} score=${source.score.toFixed(2)}: ${source.snippet}`;
+      })
+      .join("\n");
+
+    return `RAG_MINI_PROMPT:\n${miniPrompt}\n\nRAG_ANSWER:\n${input.rag.answer}\n\nИСТОЧНИКИ (цитировать как [1], [2] ...):\n${sourcesText}`;
+  }
+
+  return `RAG_MINI_PROMPT:\n${miniPrompt}\n\nИСТОЧНИКИ: (пусто)`;
+};
+
+export const buildUserPrompt = (input: LLMGenerateInput): string => {
+  const lang = input.language || "ru";
+  const slots = input.imagePlan.slots.map((slot: LLMGenerateInput["imagePlan"]["slots"][number]) => ({
+    slotId: slot.slotId,
+    kind: slot.kind,
+    aspect: slot.aspect ?? "any",
+    query: slot.query,
+    hint: slot.hint,
+    styleHint: slot.styleHint,
+    negative: slot.negative,
+  }));
+
+  return JSON.stringify(
+    {
+      task: "generate_presentation_content_and_image_hints",
+      objective: "Ты делаешь текст для презентации по теме и формируешь подсказки для изображений.",
+      mustReturn: {
+        format: "strict_json",
+        contract: "{ fills: Record<string,string>, imagePlanPatch?: { slots: [{ slotId, query?, hint?, styleHint?, negative?[] }] } }",
+      },
+      requirements: {
+        language: lang,
+        responseFormat: {
+          fills: "Record<string,string>",
+          imagePlanPatch: {
+            slots: [{ slotId: "string", query: "string?", hint: "string?", styleHint: "string?", negative: ["string"] }],
+          },
+        },
+        style: [
+          "compact",
+          "no fluff",
+          "for bullets prefer lines with '-' or '•'",
+          "for s10_sources provide 3-6 generic source references without fake precise URLs",
+          ...buildRagRuleHints(input),
+        ],
+      },
+      context: {
+        topic: input.topic,
+        themeId: input.themeId,
+        presentationId: input.presentationId,
+        fillKeys: input.fillKeys.map(summarizeKey),
+        imageSlots: slots,
+        groundingContext: buildRagContext(input),
+      },
+      outputRule: "Strict JSON only",
+    },
+    null,
+    2
+  );
+};

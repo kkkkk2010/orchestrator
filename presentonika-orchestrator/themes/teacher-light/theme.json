@@ -1,0 +1,19 @@
+{
+  "id": "teacher-light",
+  "name": "Teacher Light",
+  "version": 1,
+  "palette": {
+    "bg1": "#F4F6FB",
+    "bg2": "#DDE7FF",
+    "accent": "#2B5BEA"
+  },
+  "background": {
+    "blobs": 3,
+    "grain": 0.12,
+    "gradientStrength": 1.4,
+    "blobAlphaMin": 0.2,
+    "blobAlphaMax": 0.36,
+    "vignette": 0.2,
+    "accentBlobChance": 0.6
+  }
+}

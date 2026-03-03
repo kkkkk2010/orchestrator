@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
 import { Queue, QueueEvents } from "bullmq";
+import type { ConnectionOptions } from "bullmq";
 import IORedis, { Redis } from "ioredis";
 
 dotenv.config();
@@ -16,6 +17,8 @@ const createConnection = (forWorker: boolean): Redis =>
   new IORedis(redisUrl, {
     maxRetriesPerRequest: forWorker ? null : undefined,
   });
+
+const asBullConnection = (redis: Redis): ConnectionOptions => redis as unknown as ConnectionOptions;
 
 export const getQueueName = (): string => queueName;
 
@@ -38,7 +41,7 @@ export const getWorkerRedisConnection = (): Redis => {
 export const getQueue = (): Queue => {
   if (!queue) {
     queue = new Queue(queueName, {
-      connection: getQueueRedisConnection(),
+      connection: asBullConnection(getQueueRedisConnection()),
     });
   }
 
@@ -48,9 +51,12 @@ export const getQueue = (): Queue => {
 export const getQueueEvents = (): QueueEvents => {
   if (!queueEvents) {
     queueEvents = new QueueEvents(queueName, {
-      connection: getWorkerRedisConnection(),
+      connection: asBullConnection(getWorkerRedisConnection()),
     });
   }
 
   return queueEvents;
 };
+
+
+export const getWorkerBullConnection = (): ConnectionOptions => asBullConnection(getWorkerRedisConnection());

@@ -1,0 +1,30 @@
+{
+  "slides": {
+    "1": { "imageAt": {} },
+    "3": {
+      "choose": { "mode": "seed", "variants": ["A", "B"] },
+      "variants": { "A": { "dropAt": [] }, "B": { "dropAt": [] } }
+    },
+    "5": {
+      "choose": { "mode": "fillLength", "key": "s5_bullets", "threshold": 320, "lt": "oneCol", "gte": "twoCol" },
+      "variants": { "oneCol": { "dropAt": [] }, "twoCol": { "dropAt": [] } }
+    },
+    "7": {
+      "choose": { "mode": "seed", "variants": ["A", "B"] },
+      "variants": { "A": { "dropAt": [] }, "B": { "dropAt": [] } }
+    },
+    "8": {
+      "imageAt": {},
+      "choose": { "mode": "fillLength", "key": "s8_examples", "threshold": 380, "lt": "oneCol", "gte": "twoCol" },
+      "variants": { "oneCol": { "dropAt": [] }, "twoCol": { "dropAt": [] } }
+    },
+    "9": {
+      "choose": { "mode": "seed", "variants": ["A", "B"] },
+      "variants": { "A": { "dropAt": [] }, "B": { "dropAt": [] } }
+    },
+    "10": {
+      "choose": { "mode": "fillLength", "key": "s10_homework", "threshold": 2, "lt": "noHw", "gte": "withHw" },
+      "variants": { "noHw": { "dropAt": [] }, "withHw": { "dropAt": [] } }
+    }
+  }
+}

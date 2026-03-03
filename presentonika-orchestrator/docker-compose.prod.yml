@@ -1,0 +1,51 @@
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  orchestrator-api:
+    build: .
+    restart: unless-stopped
+    command: ["node", "dist/server.js"]
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./out:/app/out
+      - ./.tmp:/app/.tmp
+      - ./.staged:/app/.staged
+      - ./themes:/app/themes:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  orchestrator-worker:
+    build: .
+    restart: unless-stopped
+    command: ["node", "dist/worker.js"]
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./out:/app/out
+      - ./.tmp:/app/.tmp
+      - ./.staged:/app/.staged
+      - ./themes:/app/themes:ro
+
+volumes:
+  redis_data:

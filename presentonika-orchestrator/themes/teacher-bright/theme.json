@@ -1,0 +1,19 @@
+{
+  "id": "teacher-bright",
+  "name": "Teacher Bright",
+  "version": 1,
+  "palette": {
+    "bg1": "#1E0D3A",
+    "bg2": "#5B2BC2",
+    "accent": "#FFDE59"
+  },
+  "background": {
+    "blobs": 3,
+    "grain": 0.12,
+    "gradientStrength": 1.4,
+    "blobAlphaMin": 0.2,
+    "blobAlphaMax": 0.36,
+    "vignette": 0.2,
+    "accentBlobChance": 0.6
+  }
+}
