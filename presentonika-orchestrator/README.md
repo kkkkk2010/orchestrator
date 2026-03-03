@@ -667,3 +667,61 @@ unzip -p out/<jobId>.out.zip imagePlan.json | jq .
 
 5) Убедиться, что `version=1`, а `slots[]` соответствует `map.json -> imageAt`.
    Для тем без `imageAt`: `slots` должен быть пустым массивом.
+
+## RAG integration (FastAPI microservice)
+
+Orchestrator can enrich generation with retrieval results from external RAG service.
+
+### Env vars
+
+- `RAG_ENABLED=false`
+- `RAG_FAIL_ON_ERROR=false`
+- `RAG_BASE_URL=http://localhost:8000`
+- `RAG_API_KEY=`
+- `RAG_COLLECTION=default`
+- `RAG_MODE=retrieve` (`retrieve|query`)
+- `RAG_TOP_K=10`
+- `RAG_MIN_SCORE=0.45`
+- `RAG_TIMEOUT_MS=15000`
+- `RAG_MAX_RETRIES=2`
+- `RAG_RETRY_BASE_DELAY_MS=400`
+- `RAG_MAX_CONTEXT_CHARS=12000`
+- `RAG_MAX_HITS=12`
+- `RAG_DEFAULT_SOURCE_URIS=` (CSV)
+- `RAG_INCLUDE_IN_OUTZIP=true`
+
+Job payload can override defaults:
+
+```json
+"rag": {
+  "collection": "default",
+  "sourceUris": ["s3://bucket/a.pdf"],
+  "topK": 8,
+  "minScore": 0.5,
+  "mode": "retrieve"
+}
+```
+
+### Local checks for RAG service
+
+```bash
+curl -s http://localhost:8000/healthz -H 'X-API-Key: <API_KEY>'
+curl -s http://localhost:8000/readyz -H 'X-API-Key: <API_KEY>'
+```
+
+### Manual tests
+
+A) `RAG_ENABLED=false`
+- run a job and verify `GET /jobs/:id -> returnValue.rag.enabled=false`.
+
+B) `RAG_ENABLED=true` + retrieve mode
+- set `RAG_BASE_URL=http://localhost:8000`, `RAG_API_KEY=...`;
+- create job (`teacher-dark` or `_example`);
+- verify `returnValue.rag.ok=true` and `returnValue.rag.hitCount > 0`;
+- verify `.tmp/<jobId>/rag.json` exists;
+- verify `out/<jobId>.out.zip` contains `rag.json` when `RAG_INCLUDE_IN_OUTZIP=true`.
+
+C) RAG unavailable
+- set `RAG_ENABLED=true`, `RAG_BASE_URL=http://localhost:9999`;
+- with `RAG_FAIL_ON_ERROR=false`: job should still complete and `returnValue.rag.ok=false`;
+- with `RAG_FAIL_ON_ERROR=true`: job should fail with `RagFailed: ...`.

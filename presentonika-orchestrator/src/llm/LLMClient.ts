@@ -1,4 +1,5 @@
 import type { ImagePlanV1 } from "../images/imagePlan";
+import type { Citation } from "../rag/formatContext";
 
 export type LLMGenerateInput = {
   presentationId: number | string;
@@ -8,6 +9,13 @@ export type LLMGenerateInput = {
   fillKeys: string[];
   imagePlan: ImagePlanV1;
   chosenVariantsPreview?: Record<string, string>;
+  rag?: {
+    mode: "retrieve" | "query";
+    contextText?: string;
+    citations?: Citation[];
+    answer?: string;
+    sources?: Citation[];
+  };
 };
 
 export type LLMGenerateOutput = {

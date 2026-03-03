@@ -19,6 +19,41 @@ const summarizeKey = (key: string): string => {
   return `${key}: текст слайда`;
 };
 
+const buildRagRuleHints = (input: LLMGenerateInput): string[] => {
+  if (!input.rag) {
+    return [];
+  }
+
+  return [
+    "Используй факты только из источников, где возможно.",
+    "Для спорных фактов добавляй ссылку вида [n].",
+    "Для s10_sources собери ссылки только на основе citations/sources: source_uri + page + fragment_id.",
+  ];
+};
+
+const buildRagContext = (input: LLMGenerateInput): string | undefined => {
+  if (!input.rag) {
+    return undefined;
+  }
+
+  if (input.rag.contextText) {
+    return `ИСТОЧНИКИ (цитировать как [1], [2] ...):\n${input.rag.contextText}`;
+  }
+
+  if (input.rag.answer && input.rag.sources?.length) {
+    const sourcesText = input.rag.sources
+      .map((source) => {
+        const page = typeof source.page === "number" ? ` (p.${source.page})` : "";
+        return `[${source.n}] ${source.source_uri}${page} score=${source.score.toFixed(2)}: ${source.snippet}`;
+      })
+      .join("\n");
+
+    return `RAG_ANSWER:\n${input.rag.answer}\n\nИСТОЧНИКИ (цитировать как [1], [2] ...):\n${sourcesText}`;
+  }
+
+  return undefined;
+};
+
 export const buildUserPrompt = (input: LLMGenerateInput): string => {
   const lang = input.language || "ru";
   const slots = input.imagePlan.slots.map((slot: LLMGenerateInput["imagePlan"]["slots"][number]) => ({
@@ -47,6 +82,7 @@ export const buildUserPrompt = (input: LLMGenerateInput): string => {
           "no fluff",
           "for bullets prefer lines with '-' or '•'",
           "for s10_sources provide 3-6 generic source references without fake precise URLs",
+          ...buildRagRuleHints(input),
         ],
       },
       context: {
@@ -55,6 +91,7 @@ export const buildUserPrompt = (input: LLMGenerateInput): string => {
         presentationId: input.presentationId,
         fillKeys: input.fillKeys.map(summarizeKey),
         imageSlots: slots,
+        groundingContext: buildRagContext(input),
       },
       outputRule: "Strict JSON only",
     },

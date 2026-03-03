@@ -11,6 +11,15 @@ export const createJobSchema = z.object({
       fills: z.record(z.string()).optional(),
     })
     .optional(),
+  rag: z
+    .object({
+      collection: z.string().min(1).optional(),
+      sourceUris: z.array(z.string().min(1)).optional(),
+      topK: z.number().int().positive().optional(),
+      minScore: z.number().min(0).max(1).optional(),
+      mode: z.enum(["retrieve", "query"]).optional(),
+    })
+    .optional(),
   save: z.object({
     endpoint: z.string().min(1).url(),
     presentationId: z.number(),

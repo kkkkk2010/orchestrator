@@ -19,6 +19,9 @@ import { saveOutzipFromUrl } from "./wp/saveOutzipFromUrl";
 import { waitForHttp } from "./net/waitForHttp";
 import { sleep } from "./util/sleep";
 import { buildStagedUrl, createStagedFile, deleteStagedRecord } from "./staged/stagedStore";
+import { HttpRagClient } from "./rag/httpRagClient";
+import { formatQuerySourcesAsCitations, formatRetrieveContext } from "./rag/formatContext";
+import { writeRagArtifacts } from "./rag/writeArtifacts";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
@@ -39,6 +42,20 @@ const STAGED_CLEANUP_ON_SUCCESS = process.env.STAGED_CLEANUP_ON_SUCCESS !== "fal
 const STAGED_CLEANUP_DELAY_SECONDS = parseInt(process.env.STAGED_CLEANUP_DELAY_SECONDS || "0", 10);
 
 
+
+const RAG_ENABLED = process.env.RAG_ENABLED === "true";
+const RAG_FAIL_ON_ERROR = process.env.RAG_FAIL_ON_ERROR === "true";
+const RAG_COLLECTION = process.env.RAG_COLLECTION || "default";
+const RAG_MODE_DEFAULT = process.env.RAG_MODE === "query" ? "query" : "retrieve";
+const RAG_TOP_K = parseInt(process.env.RAG_TOP_K || "10", 10);
+const RAG_MIN_SCORE = Number.parseFloat(process.env.RAG_MIN_SCORE || "0.45");
+const RAG_MAX_CONTEXT_CHARS = parseInt(process.env.RAG_MAX_CONTEXT_CHARS || "12000", 10);
+const RAG_MAX_HITS = parseInt(process.env.RAG_MAX_HITS || "12", 10);
+const RAG_DEFAULT_SOURCE_URIS = (process.env.RAG_DEFAULT_SOURCE_URIS || "")
+  .split(",")
+  .map((item: string) => item.trim())
+  .filter((item: string) => item.length > 0);
+const RAG_INCLUDE_IN_OUTZIP = process.env.RAG_INCLUDE_IN_OUTZIP !== "false";
 
 const MAX_SLIDES = parseInt(process.env.MAX_SLIDES || "30", 10);
 const MAX_TEMPLATE_ZIP_BYTES = parseInt(process.env.MAX_TEMPLATE_ZIP_BYTES || "200000000", 10);
@@ -63,6 +80,7 @@ type StageName =
   | "load_theme_pack"
   | "read_template_zip"
   | "parse_doc"
+  | "rag_retrieve"
   | "apply_variants_fills"
   | "prepare_images"
   | "generate_backgrounds"
@@ -166,6 +184,106 @@ const worker = new Worker(
       throw new Error(`TooManySlides: ${slideCount} > ${MAX_SLIDES}`);
     }
 
+    const ragEnabledForJob = RAG_ENABLED;
+    const ragStartedAt = Date.now();
+    let ragContextText: string | undefined;
+    let ragCitations: ReturnType<typeof formatRetrieveContext>["citations"] | undefined;
+    let ragAnswer: string | undefined;
+    let ragSources: ReturnType<typeof formatQuerySourcesAsCitations> | undefined;
+    let ragJsonString: string | null = null;
+    let ragTmpPath: string | null = null;
+    let ragIncluded = false;
+    let ragHitCount = 0;
+    const ragMode = job.data?.rag?.mode === "query" ? "query" : (job.data?.rag?.mode === "retrieve" ? "retrieve" : RAG_MODE_DEFAULT);
+    const ragCollection = typeof job.data?.rag?.collection === "string" && job.data.rag.collection.length > 0
+      ? job.data.rag.collection
+      : RAG_COLLECTION;
+    const ragTopK = typeof job.data?.rag?.topK === "number" ? job.data.rag.topK : RAG_TOP_K;
+    const ragMinScore = typeof job.data?.rag?.minScore === "number" ? job.data.rag.minScore : RAG_MIN_SCORE;
+    const ragSourceUris = Array.isArray(job.data?.rag?.sourceUris) && job.data.rag.sourceUris.length > 0
+      ? job.data.rag.sourceUris
+      : (RAG_DEFAULT_SOURCE_URIS.length > 0 ? RAG_DEFAULT_SOURCE_URIS : undefined);
+    let ragError: string | undefined;
+
+    if (ragEnabledForJob) {
+      try {
+        await job.updateProgress(70);
+        jobLogger.info({ stage: "rag_retrieve", mode: ragMode }, "progress updated");
+
+        const ragClient = new HttpRagClient();
+        const ragQuery = `тема урока: ${typeof job.data?.topic === "string" ? job.data.topic : ""}`;
+
+        if (ragMode === "query") {
+          const response = await ragClient.query({
+            query: ragQuery,
+            topK: ragTopK,
+            minScore: ragMinScore,
+            collection: ragCollection,
+            sourceUris: ragSourceUris,
+          });
+
+          ragAnswer = response.answer;
+          ragSources = formatQuerySourcesAsCitations(response.sources.slice(0, RAG_MAX_HITS));
+          ragHitCount = response.sources.length;
+
+          const artifacts = await writeRagArtifacts({
+            jobId,
+            mode: "query",
+            query: ragQuery,
+            collection: ragCollection,
+            sourceUris: ragSourceUris,
+            topK: ragTopK,
+            minScore: ragMinScore,
+            sources: response.sources,
+          }).catch((error) => {
+            jobLogger.warn({ err: error }, "unable to persist rag artifact");
+            return null;
+          });
+
+          ragJsonString = artifacts?.ragJsonString || null;
+          ragTmpPath = artifacts?.ragTmpPath || null;
+        } else {
+          const response = await ragClient.retrieve({
+            query: ragQuery,
+            topK: ragTopK,
+            minScore: ragMinScore,
+            collection: ragCollection,
+            sourceUris: ragSourceUris,
+          });
+
+          const formatted = formatRetrieveContext(response.hits, RAG_MAX_CONTEXT_CHARS, RAG_MAX_HITS);
+          ragContextText = formatted.contextText;
+          ragCitations = formatted.citations;
+          ragHitCount = response.hits.length;
+
+          const artifacts = await writeRagArtifacts({
+            jobId,
+            mode: "retrieve",
+            query: ragQuery,
+            collection: ragCollection,
+            sourceUris: ragSourceUris,
+            topK: ragTopK,
+            minScore: ragMinScore,
+            hits: response.hits,
+          }).catch((error) => {
+            jobLogger.warn({ err: error }, "unable to persist rag artifact");
+            return null;
+          });
+
+          ragJsonString = artifacts?.ragJsonString || null;
+          ragTmpPath = artifacts?.ragTmpPath || null;
+        }
+      } catch (error) {
+        ragError = error instanceof Error ? error.message : String(error);
+        if (RAG_FAIL_ON_ERROR) {
+          throw new Error(`RagFailed: ${ragError}`);
+        }
+        jobLogger.warn({ err: error }, "rag retrieval failed, continuing without context");
+      } finally {
+        mark("rag_retrieve");
+      }
+    }
+
     const generatedFills = buildTestFills(fillKeys);
     const debugFillsRaw = job.data?.debug?.fills;
     const debugFills = (debugFillsRaw && typeof debugFillsRaw === "object" ? debugFillsRaw : {}) as Record<string, string>;
@@ -266,13 +384,21 @@ const worker = new Worker(
         ...imagePlan.replacements,
         ...backgrounds.replacements,
       },
-      extraEntries: imagePlanJsonString
-        ? {
-            "imagePlan.json": Buffer.from(imagePlanJsonString, "utf8"),
-          }
-        : {},
+      extraEntries: {
+        ...(imagePlanJsonString
+          ? {
+              "imagePlan.json": Buffer.from(imagePlanJsonString, "utf8"),
+            }
+          : {}),
+        ...(ragJsonString && RAG_INCLUDE_IN_OUTZIP
+          ? {
+              "rag.json": Buffer.from(ragJsonString, "utf8"),
+            }
+          : {}),
+      },
     });
     mark("assemble_zip");
+    ragIncluded = Boolean(ragJsonString && RAG_INCLUDE_IN_OUTZIP);
 
     const imageMissing = [...imagePlan.missing];
     for (const missingEntryPath of assembled.missingEntryPaths) {
@@ -528,6 +654,21 @@ const worker = new Worker(
         backgroundsPlannedCount: slideCount,
         backgroundsReplacedCount,
         backgroundsMissing: backgroundsMissingCapped,
+        ragIncluded,
+      },
+      rag: {
+        enabled: ragEnabledForJob,
+        ok: ragEnabledForJob ? !ragError : false,
+        mode: ragMode,
+        topK: ragTopK,
+        minScore: ragMinScore,
+        hitCount: ragHitCount,
+        citationCount: ragCitations?.length || ragSources?.length || 0,
+        contextChars: ragContextText?.length || ragAnswer?.length || 0,
+        usedSourceUrisCount: ragSourceUris?.length || 0,
+        error: ragError,
+        timingsMs: ragEnabledForJob ? Date.now() - ragStartedAt : undefined,
+        pathTmp: ragTmpPath ? path.relative(process.cwd(), ragTmpPath) : null,
       },
       upload,
       stats: {
@@ -565,6 +706,11 @@ const worker = new Worker(
         backgroundsPlannedCount: slideCount,
         backgroundsReplacedCount,
         backgroundsMissingCount: backgroundsMissing.length,
+        ragEnabledForJob,
+        ragMode,
+        ragHitCount,
+        ragIncluded,
+        ragError,
         uploadAttempted: upload.attempted,
         uploadMode: upload.mode,
         uploadOk: upload.ok,
