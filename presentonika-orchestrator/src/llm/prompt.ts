@@ -25,8 +25,9 @@ const buildRagRuleHints = (input: LLMGenerateInput): string[] => {
   }
 
   return [
-    "Используй факты только из источников, где возможно.",
-    "Для спорных фактов добавляй ссылку вида [n].",
+    "Сначала используй факты из приложенных фрагментов источников.",
+    "Если фрагментов нет или их недостаточно, ответь на основе своих знаний без выдуманных ссылок [n].",
+    "Ссылки [n] ставь только когда реально используешь соответствующий источник.",
     "Для s10_sources собери ссылки только на основе citations/sources: source_uri + page + fragment_id.",
   ];
 };
@@ -36,8 +37,11 @@ const buildRagContext = (input: LLMGenerateInput): string | undefined => {
     return undefined;
   }
 
+  const miniPrompt = input.rag.miniPrompt ||
+    "Сначала используй информацию из ИСТОЧНИКОВ; если информации не хватает — дополни ответ своими знаниями без выдуманных ссылок.";
+
   if (input.rag.contextText) {
-    return `ИСТОЧНИКИ (цитировать как [1], [2] ...):\n${input.rag.contextText}`;
+    return `RAG_MINI_PROMPT:\n${miniPrompt}\n\nИСТОЧНИКИ (цитировать как [1], [2] ...):\n${input.rag.contextText}`;
   }
 
   if (input.rag.answer && input.rag.sources?.length) {
@@ -48,10 +52,10 @@ const buildRagContext = (input: LLMGenerateInput): string | undefined => {
       })
       .join("\n");
 
-    return `RAG_ANSWER:\n${input.rag.answer}\n\nИСТОЧНИКИ (цитировать как [1], [2] ...):\n${sourcesText}`;
+    return `RAG_MINI_PROMPT:\n${miniPrompt}\n\nRAG_ANSWER:\n${input.rag.answer}\n\nИСТОЧНИКИ (цитировать как [1], [2] ...):\n${sourcesText}`;
   }
 
-  return undefined;
+  return `RAG_MINI_PROMPT:\n${miniPrompt}\n\nИСТОЧНИКИ: (пусто)`;
 };
 
 export const buildUserPrompt = (input: LLMGenerateInput): string => {

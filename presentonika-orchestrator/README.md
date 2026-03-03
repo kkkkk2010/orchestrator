@@ -757,3 +757,7 @@ DEEPSEEK_MODEL=deepseek-chat
 
 Если RAG недоступен и `RAG_FAIL_ON_ERROR=false`, worker продолжит без grounding-контекста.
 Если DeepSeek недоступен и `LLM_FAIL_ON_ERROR=false`, worker использует fallback `TEST_<key>`.
+
+Даже если RAG вернул пустые фрагменты, в LLM всегда передаётся `RAG_MINI_PROMPT`:
+- сначала используй приложенные фрагменты;
+- если их недостаточно — дополни ответ собственными знаниями без выдуманных ссылок `[n]`.

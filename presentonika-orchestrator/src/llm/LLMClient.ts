@@ -15,6 +15,7 @@ export type LLMGenerateInput = {
     citations?: Citation[];
     answer?: string;
     sources?: Citation[];
+    miniPrompt?: string;
   };
 };
 

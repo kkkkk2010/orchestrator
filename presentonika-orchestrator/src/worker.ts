@@ -241,6 +241,7 @@ const worker = new Worker(
       ? job.data.rag.sourceUris
       : (RAG_DEFAULT_SOURCE_URIS.length > 0 ? RAG_DEFAULT_SOURCE_URIS : undefined);
     let ragError: string | undefined;
+    const ragMiniPrompt = "Сначала используй информацию из приложенных фрагментов. Если фрагментов нет или их не хватает — ответь на основе своих знаний без выдуманных ссылок [n].";
 
     if (ragEnabledForJob) {
       try {
@@ -357,11 +358,13 @@ const worker = new Worker(
                 mode: "retrieve",
                 contextText: ragContextText,
                 citations: ragCitations,
+                miniPrompt: ragMiniPrompt,
               }
             : {
                 mode: "query",
                 answer: ragAnswer,
                 sources: ragSources,
+                miniPrompt: ragMiniPrompt,
               },
         });
 
@@ -772,6 +775,7 @@ const worker = new Worker(
         error: ragError,
         timingsMs: ragEnabledForJob ? Date.now() - ragStartedAt : undefined,
         pathTmp: ragTmpPath ? path.relative(process.cwd(), ragTmpPath) : null,
+        miniPrompt: ragMiniPrompt,
       },
       llm: {
         enabled: LLM_ENABLED,
