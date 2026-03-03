@@ -46,6 +46,7 @@ export class DeepSeekClient implements LLMClient {
     messages: Array<{ role: "system" | "user"; content: string }>;
     temperature: number;
     max_tokens: number;
+    response_format: { type: "json_object" };
     signal: AbortSignal;
   }) => Promise<ChatCompletionLike>;
 
@@ -55,6 +56,7 @@ export class DeepSeekClient implements LLMClient {
       messages: Array<{ role: "system" | "user"; content: string }>;
       temperature: number;
       max_tokens: number;
+      response_format: { type: "json_object" };
       signal: AbortSignal;
     }) => Promise<ChatCompletionLike>;
   }) {
@@ -90,6 +92,7 @@ export class DeepSeekClient implements LLMClient {
           messages,
           temperature: this.temperature,
           max_tokens: this.maxTokens,
+          response_format: { type: "json_object" },
           signal: controller.signal,
         });
       }
@@ -99,6 +102,7 @@ export class DeepSeekClient implements LLMClient {
         messages,
         temperature: this.temperature,
         max_tokens: this.maxTokens,
+        response_format: { type: "json_object" },
         stream: false,
       }, { signal: controller.signal })) as unknown as ChatCompletionLike;
     } finally {
@@ -140,7 +144,7 @@ export class DeepSeekClient implements LLMClient {
               { role: "system", content: `${system} Ты нарушил формат. Верни ТОЛЬКО валидный JSON по схеме без комментариев.` },
               {
                 role: "user",
-                content: `Ошибка валидации: ${String(repairError.message).slice(0, 800)}\n\nПредыдущий ответ:\n${rawText.slice(0, 2000)}`,
+                content: `Ошибка валидации: ${String(repairError.message).slice(0, 800)}\n\nОбязательные ключи fills:\n${input.fillKeys.join(", ")}\n\nПредыдущий ответ:\n${rawText.slice(0, 2000)}`,
               },
             ]);
 
@@ -165,6 +169,10 @@ export class DeepSeekClient implements LLMClient {
 
         if (!parsed) {
           throw new Error("LLMInvalidJSON: parse failed");
+        }
+
+        if (input.fillKeys.length > 0 && Object.keys(parsed.fills).length === 0) {
+          throw new Error("LLMEmptyFills: no accepted fill keys in model output");
         }
 
         return {
