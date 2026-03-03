@@ -25,6 +25,27 @@ const trimMax = (value: string, max: number): string => {
   return trimmed.length > max ? trimmed.slice(0, max) : trimmed;
 };
 
+const normalizeFillKey = (rawKey: string): string[] => {
+  const trimmed = rawKey.trim();
+  const variants = new Set<string>();
+
+  variants.add(trimmed);
+  variants.add(trimmed.replace(/^['"`]|['"`]$/g, ""));
+  variants.add(trimmed.split(":")[0]?.trim() || trimmed);
+  variants.add(trimmed.split(" ")[0]?.trim() || trimmed);
+
+  return [...variants].filter((item) => item.length > 0);
+};
+
+const resolveAllowedFillKey = (rawKey: string, allowedFills: Set<string>): string | null => {
+  for (const variant of normalizeFillKey(rawKey)) {
+    if (allowedFills.has(variant)) {
+      return variant;
+    }
+  }
+  return null;
+};
+
 export const parseAndNormalizeLLMOutput = (params: {
   raw: unknown;
   input: LLMGenerateInput;
@@ -39,10 +60,11 @@ export const parseAndNormalizeLLMOutput = (params: {
   const allowedFills = new Set(params.input.fillKeys);
   const fills: Record<string, string> = {};
   for (const [key, value] of Object.entries(parsed.fills)) {
-    if (!allowedFills.has(key)) {
+    const normalizedKey = resolveAllowedFillKey(key, allowedFills);
+    if (!normalizedKey) {
       continue;
     }
-    fills[key] = trimMax(String(value), 2000);
+    fills[normalizedKey] = trimMax(String(value), 2000);
   }
 
   const allowedSlots = new Set(params.input.imagePlan.slots.map((slot) => slot.slotId));

@@ -330,6 +330,7 @@ const worker = new Worker(
     let llmImagePlanPatch: {
       slots: Array<{ slotId: string; query?: string; hint?: string; styleHint?: string; negative?: string[] }>;
     } | undefined;
+    let llmAcceptedFillsCount = 0;
 
     if (LLM_ENABLED) {
       await job.updateProgress(72);
@@ -369,6 +370,7 @@ const worker = new Worker(
         });
 
         llmFills = llmResponse.fills;
+        llmAcceptedFillsCount = Object.keys(llmFills).length;
         llmMeta = {
           model: llmResponse.meta?.model,
           tokens: llmResponse.meta?.tokens,
@@ -785,6 +787,8 @@ const worker = new Worker(
         latencyMs: llmMeta?.latencyMs,
         attempts: llmMeta?.attempts,
         imagePlanPatchedSlots: llmImagePlanPatch?.slots.length || 0,
+        acceptedFillsCount: llmAcceptedFillsCount,
+        expectedFillsCount: fillKeys.length,
         error: llmError,
       },
       upload,
@@ -831,6 +835,8 @@ const worker = new Worker(
         llmEnabled: LLM_ENABLED,
         llmModel: llmMeta?.model,
         llmError,
+        llmAcceptedFillsCount,
+        expectedFillsCount: fillKeys.length,
         uploadAttempted: upload.attempted,
         uploadMode: upload.mode,
         uploadOk: upload.ok,
