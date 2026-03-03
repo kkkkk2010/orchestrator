@@ -725,3 +725,35 @@ C) RAG unavailable
 - set `RAG_ENABLED=true`, `RAG_BASE_URL=http://localhost:9999`;
 - with `RAG_FAIL_ON_ERROR=false`: job should still complete and `returnValue.rag.ok=false`;
 - with `RAG_FAIL_ON_ERROR=true`: job should fail with `RagFailed: ...`.
+
+## Как включить DeepSeek + RAG (пошагово)
+
+1. Убедитесь, что RAG сервис доступен на `http://localhost:8000` и проиндексированы источники.
+2. В orchestrator `.env` заполните:
+
+```env
+RAG_ENABLED=true
+RAG_BASE_URL=http://localhost:8000
+RAG_API_KEY=super-secret-key
+RAG_COLLECTION=default
+RAG_MODE=retrieve
+RAG_TOP_K=8
+RAG_MIN_SCORE=0.45
+
+LLM_ENABLED=true
+LLM_FAIL_ON_ERROR=false
+DEEPSEEK_API_KEY=<YOUR_DEEPSEEK_KEY>
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+```
+
+3. Перезапустите API и worker.
+4. Отправьте `POST /jobs` (опционально с `rag.sourceUris`).
+5. Проверьте `GET /jobs/:id`:
+   - `returnValue.rag.ok=true` и `hitCount>0`;
+   - `returnValue.llm.ok=true` и `model` заполнен;
+   - `returnValue.assemble.imagePlanIncluded=true`.
+6. Проверьте `.tmp/<jobId>/rag.json` и (если включено) `rag.json` внутри `out.zip`.
+
+Если RAG недоступен и `RAG_FAIL_ON_ERROR=false`, worker продолжит без grounding-контекста.
+Если DeepSeek недоступен и `LLM_FAIL_ON_ERROR=false`, worker использует fallback `TEST_<key>`.

@@ -22,6 +22,7 @@ import { buildStagedUrl, createStagedFile, deleteStagedRecord } from "./staged/s
 import { HttpRagClient } from "./rag/httpRagClient";
 import { formatQuerySourcesAsCitations, formatRetrieveContext } from "./rag/formatContext";
 import { writeRagArtifacts } from "./rag/writeArtifacts";
+import { DeepSeekClient } from "./llm/deepseek/DeepSeekClient";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
@@ -57,6 +58,9 @@ const RAG_DEFAULT_SOURCE_URIS = (process.env.RAG_DEFAULT_SOURCE_URIS || "")
   .filter((item: string) => item.length > 0);
 const RAG_INCLUDE_IN_OUTZIP = process.env.RAG_INCLUDE_IN_OUTZIP !== "false";
 
+const LLM_ENABLED = process.env.LLM_ENABLED === "true";
+const LLM_FAIL_ON_ERROR = process.env.LLM_FAIL_ON_ERROR === "true";
+
 const MAX_SLIDES = parseInt(process.env.MAX_SLIDES || "30", 10);
 const MAX_TEMPLATE_ZIP_BYTES = parseInt(process.env.MAX_TEMPLATE_ZIP_BYTES || "200000000", 10);
 const MAX_OUTZIP_BYTES_LOCAL = parseInt(process.env.MAX_OUTZIP_BYTES_LOCAL || "250000000", 10);
@@ -81,6 +85,7 @@ type StageName =
   | "read_template_zip"
   | "parse_doc"
   | "rag_retrieve"
+  | "llm_generate"
   | "apply_variants_fills"
   | "prepare_images"
   | "generate_backgrounds"
@@ -136,6 +141,38 @@ const buildTestFills = (fillKeys: string[]): Record<string, string> => {
   }
 
   return fills;
+};
+
+
+
+const applyImagePlanPatch = (params: {
+  imagePlanDocument: ReturnType<typeof buildImagePlanFromMap>;
+  patch: { slots: Array<{ slotId: string; query?: string; hint?: string; styleHint?: string; negative?: string[] }> };
+}): void => {
+  const slotById = new Map<string, ReturnType<typeof buildImagePlanFromMap>["slots"][number]>();
+  for (const slot of params.imagePlanDocument.slots as ReturnType<typeof buildImagePlanFromMap>["slots"]) {
+    slotById.set(slot.slotId, slot);
+  }
+
+  for (const slotPatch of params.patch.slots) {
+    const slot = slotById.get(slotPatch.slotId);
+    if (!slot) {
+      continue;
+    }
+
+    if (typeof slotPatch.query === "string" && slotPatch.query.trim().length > 0) {
+      slot.query = slotPatch.query;
+    }
+    if (typeof slotPatch.hint === "string" && slotPatch.hint.trim().length > 0) {
+      slot.hint = slotPatch.hint;
+    }
+    if (typeof slotPatch.styleHint === "string" && slotPatch.styleHint.trim().length > 0) {
+      slot.styleHint = slotPatch.styleHint;
+    }
+    if (Array.isArray(slotPatch.negative) && slotPatch.negative.length > 0) {
+      slot.negative = slotPatch.negative;
+    }
+  }
 };
 
 const worker = new Worker(
@@ -284,12 +321,74 @@ const worker = new Worker(
       }
     }
 
-    const generatedFills = buildTestFills(fillKeys);
+    const map = await readThemeMap(themeId);
+    const baseGeneratedFills = buildTestFills(fillKeys);
+    let llmFills: Record<string, string> = {};
+    let llmError: string | undefined;
+    let llmMeta: { model?: string; tokens?: number; latencyMs?: number; attempts?: number } | undefined;
+    let llmImagePlanPatch: {
+      slots: Array<{ slotId: string; query?: string; hint?: string; styleHint?: string; negative?: string[] }>;
+    } | undefined;
+
+    if (LLM_ENABLED) {
+      await job.updateProgress(72);
+      jobLogger.info({ stage: "llm_generate" }, "progress updated");
+
+      try {
+        const llmClient = new DeepSeekClient();
+        const llmImagePlanInput = buildImagePlanFromMap({
+          map,
+          doc,
+          presentationId,
+          themeId,
+          topic: typeof job.data?.topic === "string" ? job.data.topic : "",
+          language: typeof job.data?.language === "string" ? job.data.language : null,
+        });
+
+        const llmResponse = await llmClient.generate({
+          presentationId,
+          themeId,
+          topic: typeof job.data?.topic === "string" ? job.data.topic : "",
+          language: typeof job.data?.language === "string" ? job.data.language : null,
+          fillKeys,
+          imagePlan: llmImagePlanInput,
+          rag: ragMode === "retrieve"
+            ? {
+                mode: "retrieve",
+                contextText: ragContextText,
+                citations: ragCitations,
+              }
+            : {
+                mode: "query",
+                answer: ragAnswer,
+                sources: ragSources,
+              },
+        });
+
+        llmFills = llmResponse.fills;
+        llmMeta = {
+          model: llmResponse.meta?.model,
+          tokens: llmResponse.meta?.tokens,
+          latencyMs: llmResponse.meta?.latencyMs,
+          attempts: llmResponse.meta?.attempts,
+        };
+        llmImagePlanPatch = llmResponse.imagePlanPatch;
+      } catch (error) {
+        llmError = error instanceof Error ? error.message : String(error);
+        if (LLM_FAIL_ON_ERROR) {
+          throw new Error(`LLMFailed: ${llmError}`);
+        }
+        jobLogger.warn({ err: error }, "llm generation failed, fallback to test fills");
+      } finally {
+        mark("llm_generate");
+      }
+    }
+
+    const generatedFills = { ...baseGeneratedFills, ...llmFills };
     const debugFillsRaw = job.data?.debug?.fills;
     const debugFills = (debugFillsRaw && typeof debugFillsRaw === "object" ? debugFillsRaw : {}) as Record<string, string>;
     const fills = { ...generatedFills, ...debugFills };
     const debugFillsApplied = Object.keys(debugFills).length > 0;
-    const map = await readThemeMap(themeId);
 
     await job.updateProgress(75);
     jobLogger.info({ stage: "apply_variants_fills" }, "progress updated");
@@ -317,6 +416,10 @@ const worker = new Worker(
         topic: typeof job.data?.topic === "string" ? job.data.topic : "",
         language: typeof job.data?.language === "string" ? job.data.language : null,
       });
+
+      if (llmImagePlanPatch && llmImagePlanPatch.slots.length > 0) {
+        applyImagePlanPatch({ imagePlanDocument, patch: llmImagePlanPatch });
+      }
 
       imagePlanJsonString = JSON.stringify(imagePlanDocument, null, 2);
       imagePlanIncluded = true;
@@ -670,6 +773,16 @@ const worker = new Worker(
         timingsMs: ragEnabledForJob ? Date.now() - ragStartedAt : undefined,
         pathTmp: ragTmpPath ? path.relative(process.cwd(), ragTmpPath) : null,
       },
+      llm: {
+        enabled: LLM_ENABLED,
+        ok: LLM_ENABLED ? !llmError : false,
+        model: llmMeta?.model,
+        tokens: llmMeta?.tokens,
+        latencyMs: llmMeta?.latencyMs,
+        attempts: llmMeta?.attempts,
+        imagePlanPatchedSlots: llmImagePlanPatch?.slots.length || 0,
+        error: llmError,
+      },
       upload,
       stats: {
         timingsMs,
@@ -711,6 +824,9 @@ const worker = new Worker(
         ragHitCount,
         ragIncluded,
         ragError,
+        llmEnabled: LLM_ENABLED,
+        llmModel: llmMeta?.model,
+        llmError,
         uploadAttempted: upload.attempted,
         uploadMode: upload.mode,
         uploadOk: upload.ok,
