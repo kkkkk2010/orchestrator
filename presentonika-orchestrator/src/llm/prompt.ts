@@ -2,8 +2,9 @@ import type { LLMGenerateInput } from "./LLMClient";
 
 export const buildSystemPrompt = (): string => {
   return [
-    "Ты генерируешь контент для слайдов и подсказки для подбора изображений.",
-    "Верни СТРОГО JSON по требуемой схеме.",
+    "Ты помощник-методист и редактор, который делает текст для учебной презентации.",
+    "Твоя задача: сгенерировать контент слайдов (fills) и подсказки для подбора изображений (imagePlanPatch).",
+    "Верни СТРОГО JSON по схеме responseFormat.",
     "Никакого текста вне JSON.",
   ].join(" ");
 };
@@ -73,6 +74,11 @@ export const buildUserPrompt = (input: LLMGenerateInput): string => {
   return JSON.stringify(
     {
       task: "generate_presentation_content_and_image_hints",
+      objective: "Ты делаешь текст для презентации по теме и формируешь подсказки для изображений.",
+      mustReturn: {
+        format: "strict_json",
+        contract: "{ fills: Record<string,string>, imagePlanPatch?: { slots: [{ slotId, query?, hint?, styleHint?, negative?[] }] } }",
+      },
       requirements: {
         language: lang,
         responseFormat: {
