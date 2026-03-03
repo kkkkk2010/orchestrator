@@ -2,7 +2,7 @@ import "dotenv/config";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { Worker } from "bullmq";
-import { getQueueName, getQueueRedisConnection, getWorkerRedisConnection } from "./queue";
+import { getQueueName, getQueueRedisConnection, getWorkerBullConnection } from "./queue";
 import { logger } from "./logger";
 import { assertThemeTemplateExists, getThemeDir, readThemeMap, readThemeSafe } from "./themes/themeStore";
 import { readDocJsonFromTemplateZip } from "./themes/templateZip";
@@ -842,7 +842,7 @@ const worker = new Worker(
     }
   },
   {
-    connection: getWorkerRedisConnection(),
+    connection: getWorkerBullConnection(),
     concurrency,
   }
 );
