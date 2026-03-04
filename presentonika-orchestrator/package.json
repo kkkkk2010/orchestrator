@@ -17,7 +17,8 @@
     "start:prod": "concurrently \"npm:start\" \"npm:start:worker\"",
     "test": "tsx src/tests/run.ts",
     "template:qa": "tsx src/tools/templateQa.ts",
-    "template:patch": "tsx src/tools/templatePatch.ts"
+    "template:patch": "tsx src/tools/templatePatch.ts",
+    "template:generate": "tsx src/tools/templateGenerate.ts"
   },
   "dependencies": {
     "bullmq": "^5.12.7",

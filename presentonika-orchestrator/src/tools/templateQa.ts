@@ -8,6 +8,10 @@ import { getThemeTemplateZipPath } from "../themes/themeStore";
 import { REQUIRED_SKELETON_KEYS } from "./skeletonKeys";
 import { detectPlaceholderImageElements } from "../images/imagePlan";
 
+type TemplateQaInput = {
+  themeId: string;
+  templateZipPath?: string;
+};
 
 const extractZipToDir = async (zipPath: string, outDir: string): Promise<void> => {
   await fs.mkdir(outDir, { recursive: true });
@@ -40,7 +44,7 @@ const extractZipToDir = async (zipPath: string, outDir: string): Promise<void> =
   });
 };
 
-type QaReport = {
+export type QaReport = {
   themeId: string;
   templatePath: string;
   extractDir: string;
@@ -57,7 +61,6 @@ type QaReport = {
   };
   generatedAt: string;
 };
-
 
 export const findMissingSkeletonKeys = (fillKeys: string[]): string[] => REQUIRED_SKELETON_KEYS.filter((key) => !fillKeys.includes(key));
 
@@ -77,9 +80,11 @@ const looksContentText = (element: Record<string, unknown>): boolean => {
   return width > 220 && height > 40;
 };
 
-export const buildTemplateQaReport = async (themeId: string): Promise<QaReport> => {
-  const templatePath = getThemeTemplateZipPath(themeId);
-  const extractDir = path.resolve(".tmp", "template-qa", `${themeId}.unzipped`);
+export const buildTemplateQaReport = async (params: string | TemplateQaInput): Promise<QaReport> => {
+  const input = typeof params === "string" ? { themeId: params } : params;
+  const templatePath = input.templateZipPath || getThemeTemplateZipPath(input.themeId);
+  const extractDir = path.resolve(".tmp", "template-qa", `${input.themeId}.unzipped`);
+
   await extractZipToDir(templatePath, extractDir);
   const doc = await readDocJsonFromTemplateZip(templatePath);
   const placeholderScan = extractPlaceholderLocations(doc);
@@ -97,8 +102,8 @@ export const buildTemplateQaReport = async (themeId: string): Promise<QaReport> 
 
   const slides = collectSlides(doc);
   const withPlaceholder = new Set(placeholderScan.locations.map((location) => `${location.slide}-${location.elementIndex}`));
-
   const textElementsWithoutPlaceholders: Array<{ slide: number; elementIndex: number; textSample: string }> = [];
+
   slides.forEach((slideUnknown, slideIdx0) => {
     const slide = slideIdx0 + 1;
     const slideRecord = (slideUnknown && typeof slideUnknown === "object" ? slideUnknown : {}) as Record<string, unknown>;
@@ -112,11 +117,7 @@ export const buildTemplateQaReport = async (themeId: string): Promise<QaReport> 
 
       const text = typeof element.text === "string" ? element.text : "";
       if (text.trim().length === 0) return;
-      textElementsWithoutPlaceholders.push({
-        slide,
-        elementIndex,
-        textSample: text.slice(0, 140),
-      });
+      textElementsWithoutPlaceholders.push({ slide, elementIndex, textSample: text.slice(0, 140) });
     });
   });
 
@@ -142,7 +143,7 @@ export const buildTemplateQaReport = async (themeId: string): Promise<QaReport> 
   }).length;
 
   return {
-    themeId,
+    themeId: input.themeId,
     templatePath,
     extractDir,
     slideCount: inferSlideCount(doc),
@@ -151,23 +152,23 @@ export const buildTemplateQaReport = async (themeId: string): Promise<QaReport> 
     missingKeysInTemplate: findMissingSkeletonKeys(fillKeys),
     duplicateKeysLocations,
     textElementsWithoutPlaceholders,
-    imageElementsSummary: {
-      totalImageElements,
-      placeholderLikeCount,
-      decorBackgroundLikeCount,
-    },
+    imageElementsSummary: { totalImageElements, placeholderLikeCount, decorBackgroundLikeCount },
     generatedAt: new Date().toISOString(),
   };
 };
 
 const run = async (): Promise<void> => {
-  const themeId = process.argv[2];
+  const args = process.argv.slice(2);
+  const themeId = args[0];
+  const zipIndex = args.indexOf("--zip");
+  const zipPath = zipIndex >= 0 ? args[zipIndex + 1] : undefined;
+
   if (!themeId) {
-    console.error("Usage: npm run template:qa -- <themeId>");
+    console.error("Usage: npm run template:qa -- <themeId> [--zip <path>]");
     process.exit(1);
   }
 
-  const report = await buildTemplateQaReport(themeId);
+  const report = await buildTemplateQaReport({ themeId, templateZipPath: zipPath });
   const outDir = path.resolve(".tmp", "template-qa");
   await fs.mkdir(outDir, { recursive: true });
   const reportPath = path.resolve(outDir, `${themeId}.report.json`);

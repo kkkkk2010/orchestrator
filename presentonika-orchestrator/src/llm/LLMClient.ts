@@ -16,6 +16,10 @@ export type LLMGenerateInput = {
     slide: number;
     kind: "hero" | "photo" | "icon" | "other";
     aspect?: "portrait" | "landscape" | "square" | "any";
+    slideType: string;
+    title: string;
+    keywords: string[];
+    entities: string[];
     slideSummary: string;
   }>;
   rag?: {

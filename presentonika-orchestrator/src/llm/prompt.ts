@@ -41,18 +41,18 @@ const keyRule = (key: string): string => {
 
 const buildImagePromptsUserPrompt = (input: LLMGenerateInput): string => {
   const slots = (input.imagePromptsInput || []).map((slot) => (
-    `${slot.slotId}: slide=${slot.slide}, kind=${slot.kind}, aspect=${slot.aspect || "any"}, summary=${slot.slideSummary}`
+    `${slot.slotId}: slide=${slot.slide}, type=${slot.slideType}, kind=${slot.kind}, aspect=${slot.aspect || "any"}, title=${slot.title}, keywords=${slot.keywords.join(",")}, entities=${slot.entities.join(",")}, summary=${slot.slideSummary}`
   ));
 
   return [
     `topic: ${input.topic || "презентация"}`,
     `themeId: ${input.themeId}`,
     `language: ${input.language || "ru"}`,
-    "Для каждого slotId верни конкретный query и 1-строчный hint.",
-    "Query должен содержать 1-2 конкретные сущности/события/атрибуты со слайда.",
-    "Все query должны быть уникальны (no duplicates).",
-    "Ограничения: query<=90, hint<=140, без кавычек и без двоеточий.",
-    "Избегай слов путь/фото как единственного уточнения; нужна конкретика (год/место/роль/событие).",
+    "Верни mapping slotId -> {query,hint} в imagePlanPatch.slots.",
+    "query MUST include >=1 entity или keyword и быть уникальным среди слотов после нормализации.",
+    "query<=90, hint<=140, без кавычек, без двоеточий.",
+    "Запрещены повторы слов и повтор topic topic.",
+    "Фраза официальное фото без уточнения запрещена: нужен entity/year/place/event.",
     "negative обязательно: [\"watermark\",\"nsfw\",\"lowres\",\"logo\",\"text\"]",
     `slots: ${slots.join("; ")}`,
   ].join("\n");

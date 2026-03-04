@@ -813,3 +813,16 @@ npm run template:patch -- teacher-dark --from-report --apply
 Workflow details: `docs/template-workflow.md`.
 
 By default orchestrator uses `THEMES_DIR=themes-local` when that folder exists; otherwise fallback is `themes`.
+
+## Template Generator v1
+
+```bash
+npm run template:generate -- teacher-dark
+npm run template:qa -- teacher-dark --zip themes-local/teacher-dark/template.generated.out.zip
+```
+
+Outputs:
+- `themes-local/teacher-dark/template.generated.out.zip`
+- `.tmp/template-qa/teacher-dark.generated.report.json`
+
+Template is ready when `missingKeysInTemplate` is empty.

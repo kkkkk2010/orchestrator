@@ -24,6 +24,7 @@ import { buildStagedUrl, createStagedFile, deleteStagedRecord } from "./staged/s
 import { HttpRagClient } from "./rag/httpRagClient";
 import { formatQuerySourcesAsCitations, formatRetrieveContext } from "./rag/formatContext";
 import { writeRagArtifacts } from "./rag/writeArtifacts";
+import { buildRagConfigLog, buildRagRequestLog, buildRagResponseLog } from "./rag/logging";
 import { DeepSeekClient } from "./llm/deepseek/DeepSeekClient";
 import { buildSystemPrompt, buildUserPrompt } from "./llm/prompt";
 import { mergeFills } from "./llm/mergeFills";
@@ -270,6 +271,12 @@ const worker = new Worker(
       : (RAG_DEFAULT_SOURCE_URIS.length > 0 ? RAG_DEFAULT_SOURCE_URIS : undefined);
     let ragError: string | undefined;
     const ragMiniPrompt = "Сначала используй информацию из приложенных фрагментов. Если фрагментов нет или их не хватает — ответь на основе своих знаний без выдуманных ссылок [n].";
+    const ragTimeoutMs = Number.parseInt(process.env.RAG_TIMEOUT_MS || "15000", 10);
+    if (!ragEnabledForJob) {
+      jobLogger.info(`[JOB ${jobId}] rag: disabled`);
+    } else {
+      jobLogger.info(`[JOB ${jobId}] ${buildRagConfigLog({ enabled: ragEnabledForJob, mode: ragMode, collection: ragCollection, topK: ragTopK, minScore: ragMinScore, timeoutMs: ragTimeoutMs })}`);
+    }
 
     if (ragEnabledForJob) {
       try {
@@ -278,6 +285,8 @@ const worker = new Worker(
 
         const ragClient = new HttpRagClient();
         const ragQuery = `тема урока: ${typeof job.data?.topic === "string" ? job.data.topic : ""}`;
+        jobLogger.info(`[JOB ${jobId}] ${buildRagRequestLog({ sourceUrisCount: ragSourceUris?.length || 0, querySnippet: ragQuery.slice(0, 120) })}`);
+        const ragRequestStartedAt = Date.now();
 
         if (ragMode === "query") {
           const response = await ragClient.query({
@@ -291,6 +300,7 @@ const worker = new Worker(
           ragAnswer = response.answer;
           ragSources = formatQuerySourcesAsCitations(response.sources.slice(0, RAG_MAX_HITS));
           ragHitCount = response.sources.length;
+          jobLogger.info(`[JOB ${jobId}] ${buildRagResponseLog({ ok: true, hitCount: ragHitCount, usedContextChars: ragAnswer?.length || 0, elapsedMs: Date.now() - ragRequestStartedAt, topSourcesSample: response.sources.slice(0, 3).map((source) => source.source_uri) })}`);
 
           const artifacts = await writeRagArtifacts({
             jobId,
@@ -321,6 +331,7 @@ const worker = new Worker(
           ragContextText = formatted.contextText;
           ragCitations = formatted.citations;
           ragHitCount = response.hits.length;
+          jobLogger.info(`[JOB ${jobId}] ${buildRagResponseLog({ ok: true, hitCount: ragHitCount, usedContextChars: ragContextText?.length || 0, elapsedMs: Date.now() - ragRequestStartedAt, topSourcesSample: response.hits.slice(0, 3).map((hit) => hit.source_uri) })}`);
 
           const artifacts = await writeRagArtifacts({
             jobId,
@@ -344,6 +355,7 @@ const worker = new Worker(
         if (RAG_FAIL_ON_ERROR) {
           throw new Error(`RagFailed: ${ragError}`);
         }
+        jobLogger.warn({ err: error }, `[JOB ${jobId}] ${buildRagResponseLog({ ok: false, hitCount: 0, usedContextChars: 0, elapsedMs: Date.now() - ragStartedAt, topSourcesSample: [] })}`);
         jobLogger.warn({ err: error }, "rag retrieval failed, continuing without context");
       } finally {
         mark("rag_retrieve");
@@ -757,7 +769,7 @@ const worker = new Worker(
     let imageSlotsInvalidCount = 0;
     let diagnosticsJsonString: string | null = null;
     let diagnosticsIncluded = false;
-    const imagePromptsDiagnostics = { attempted: false, ok: false, slotCount: 0, filledCount: 0, missingCount: 0, duplicatesBefore: 0, duplicatesAfter: 0, sample: [] as Array<{ slotId: string; query: string }> };
+    const imagePromptsDiagnostics = { attempted: false, ok: false, slotCount: 0, filledCount: 0, missingCount: 0, duplicatesBefore: 0, duplicatesAfter: 0, badGenericCount: 0, compressionAppliedCount: 0, sampleQueries: [] as string[], sample: [] as Array<{ slotId: string; query: string }> };
 
     try {
       const imagePlanBuild = buildImagePlanWithDiagnostics({
@@ -802,6 +814,10 @@ const worker = new Worker(
                 slide: slot.slide,
                 kind: slot.kind,
                 aspect: slot.aspect,
+                slideType: slideSummaries[slot.slide]?.slideType || "general",
+                title: slideSummaries[slot.slide]?.title || "",
+                keywords: slideSummaries[slot.slide]?.keywords || [],
+                entities: slideSummaries[slot.slide]?.entities || [],
                 slideSummary: slideSummaries[slot.slide]?.summary || topic,
               })),
             });
@@ -843,9 +859,12 @@ const worker = new Worker(
         }
       }
 
-      const dedupStats = enforceImagePromptUniqueness(imagePlanDocument.slots, slideSummaries);
+      const dedupStats = enforceImagePromptUniqueness(imagePlanDocument.slots, slideSummaries, topic);
       imagePromptsDiagnostics.duplicatesBefore = dedupStats.duplicatesBefore;
       imagePromptsDiagnostics.duplicatesAfter = dedupStats.duplicatesAfter;
+      imagePromptsDiagnostics.badGenericCount = dedupStats.badGenericCount;
+      imagePromptsDiagnostics.compressionAppliedCount = dedupStats.compressionAppliedCount;
+      imagePromptsDiagnostics.sampleQueries = (imagePlanDocument.slots as Array<{ query: string }>).slice(0, 10).map((slot) => slot.query);
       imagePromptsDiagnostics.sample = (imagePlanDocument.slots as Array<{ slotId: string; query: string }>).slice(0, 8).map((slot) => ({ slotId: slot.slotId, query: slot.query }));
       imagePromptsDiagnostics.missingCount = (imagePlanDocument.slots as Array<{ query: string }>).filter((slot) => !slot.query || slot.query.trim().length < 5).length;
 

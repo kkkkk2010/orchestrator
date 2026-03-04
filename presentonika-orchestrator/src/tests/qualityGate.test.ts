@@ -52,7 +52,7 @@ export const runQualityGateTests = (): void => {
       slideTitle: "Инаугурация Дональда Трампа",
       slideSummary: "церемония 2017 вашингтон капитолий",
       kind: "photo",
-    });
+    }, "Тема урока");
     assert.ok(!fallback.query.includes("slide"));
     assert.ok(fallback.query.includes("Инаугурация"));
   }
@@ -63,9 +63,9 @@ export const runQualityGateTests = (): void => {
       { slotId: "b", slide: 2, element: 1, kind: "photo", query: "Трамп инаугурация", hint: "x", aspect: "landscape" },
     ];
     const dedup = enforceImagePromptUniqueness(slots, {
-      1: { slide: 1, title: "Инаугурация", keywords: ["2017", "вашингтон"], slideType: "facts", summary: "Инаугурация 2017" },
-      2: { slide: 2, title: "Митинги", keywords: ["митинг", "речь"], slideType: "examples", summary: "Митинги и выступления" },
-    });
+      1: { slide: 1, title: "Инаугурация", keywords: ["2017", "вашингтон"], entities: ["2017"], slideType: "facts", summary: "Инаугурация 2017" },
+      2: { slide: 2, title: "Митинги", keywords: ["митинг", "речь"], entities: ["митинг"], slideType: "examples", summary: "Митинги и выступления" },
+    }, "Тема урока");
     assert.ok(dedup.duplicatesBefore > 0);
     assert.equal(dedup.duplicatesAfter, 0);
   }
