@@ -4,6 +4,7 @@ export const imagePlanSlotSchema = z.object({
   slotId: z.string(),
   slide: z.number().int().positive(),
   element: z.number().int().nonnegative(),
+  elementId: z.string().optional(),
   kind: z.enum(["hero", "photo", "icon", "other"]),
   query: z.string(),
   hint: z.string().nullable(),
@@ -32,6 +33,20 @@ export const imagePlanSchema = z.object({
 
 export type ImagePlanSlot = z.infer<typeof imagePlanSlotSchema>;
 export type ImagePlanV1 = z.infer<typeof imagePlanSchema>;
+
+export type ImageSlotTarget = {
+  slide: number;
+  originalIndex: number;
+  slotId: string;
+  elementId?: string;
+  status: "ok" | "invalid";
+  reason?: string;
+};
+
+export type ResolvedImageSlotTarget = Omit<ImageSlotTarget, "status"> & {
+  currentIndex?: number;
+  status: "ok" | "invalid" | "dropped";
+};
 
 type SlideRule = {
   imageAt?: Record<string, string>;
@@ -132,23 +147,10 @@ const priorityFromKind = (kind: ImagePlanSlot["kind"]): number => {
 
 const trim = (value: string, max: number): string => (value.length > max ? value.slice(0, max) : value);
 
-export const buildImagePlanFromMap = (params: {
-  map: unknown;
-  doc: unknown;
-  presentationId: number | string;
-  themeId: string;
-  topic: string;
-  language: string | null;
-}): ImagePlanV1 => {
+export const collectImageTargetsFromMap = (params: { map: unknown; doc: unknown }): ImageSlotTarget[] => {
   const parsedMap = (params.map && typeof params.map === "object" ? params.map : {}) as ThemeMap;
-  const base = params.topic.trim() || "презентация";
   const slides = getSlides(params.doc);
-
-  const docRecord = (params.doc && typeof params.doc === "object" ? params.doc : {}) as Record<string, unknown>;
-  const defaultSlideWidth = readNum(docRecord.width) ?? 1536;
-  const defaultSlideHeight = readNum(docRecord.height) ?? 864;
-
-  const slots: ImagePlanSlot[] = [];
+  const targets: ImageSlotTarget[] = [];
 
   for (const [slideRaw, slideRule] of Object.entries(parsedMap.slides ?? {})) {
     const slide = Number.parseInt(slideRaw, 10);
@@ -162,46 +164,158 @@ export const buildImagePlanFromMap = (params: {
     }
 
     const slideNode = (slides[slide - 1] && typeof slides[slide - 1] === "object" ? slides[slide - 1] : {}) as Record<string, unknown>;
+    const elements = Array.isArray(slideNode.elements) ? slideNode.elements : [];
+
+    for (const [elementRaw, slotRaw] of Object.entries(imageAt)) {
+      const originalIndex = Number.parseInt(elementRaw, 10);
+      const slotId = typeof slotRaw === "string" ? slotRaw : "";
+      if (!Number.isInteger(originalIndex) || originalIndex < 0 || !slotId) {
+        targets.push({
+          slide,
+          originalIndex,
+          slotId,
+          status: "invalid",
+          reason: "invalid_index_or_slot",
+        });
+        continue;
+      }
+
+      const elementNode = (elements[originalIndex] && typeof elements[originalIndex] === "object"
+        ? elements[originalIndex]
+        : null) as Record<string, unknown> | null;
+
+      if (!elementNode) {
+        targets.push({
+          slide,
+          originalIndex,
+          slotId,
+          status: "invalid",
+          reason: "element_out_of_range",
+        });
+        continue;
+      }
+
+      const elementId = typeof elementNode.id === "string" ? elementNode.id : undefined;
+      if (!elementId) {
+        targets.push({
+          slide,
+          originalIndex,
+          slotId,
+          status: "invalid",
+          reason: "missing_element_id",
+        });
+        continue;
+      }
+
+      targets.push({
+        slide,
+        originalIndex,
+        slotId,
+        elementId,
+        status: "ok",
+      });
+    }
+  }
+
+  return targets;
+};
+
+export const remapImageTargetsToDoc = (params: { targets: ImageSlotTarget[]; doc: unknown }): ResolvedImageSlotTarget[] => {
+  const slides = getSlides(params.doc);
+
+  return params.targets.map((target) => {
+    if (target.status === "invalid") {
+      return {
+        ...target,
+        status: "invalid",
+      };
+    }
+
+    const slideNode = (slides[target.slide - 1] && typeof slides[target.slide - 1] === "object"
+      ? slides[target.slide - 1]
+      : {}) as Record<string, unknown>;
+    const elements = Array.isArray(slideNode.elements) ? slideNode.elements : [];
+    const currentIndex = elements.findIndex((element) => {
+      if (!element || typeof element !== "object") {
+        return false;
+      }
+      return (element as Record<string, unknown>).id === target.elementId;
+    });
+
+    if (currentIndex < 0) {
+      return {
+        ...target,
+        status: "dropped",
+      };
+    }
+
+    return {
+      ...target,
+      currentIndex,
+      status: "ok",
+    };
+  });
+};
+
+export const buildImagePlanFromResolvedTargets = (params: {
+  resolvedTargets: ResolvedImageSlotTarget[];
+  doc: unknown;
+  presentationId: number | string;
+  themeId: string;
+  topic: string;
+  language: string | null;
+}): ImagePlanV1 => {
+  const base = params.topic.trim() || "презентация";
+  const slides = getSlides(params.doc);
+
+  const docRecord = (params.doc && typeof params.doc === "object" ? params.doc : {}) as Record<string, unknown>;
+  const defaultSlideWidth = readNum(docRecord.width) ?? 1536;
+  const defaultSlideHeight = readNum(docRecord.height) ?? 864;
+
+  const slots: ImagePlanSlot[] = [];
+
+  for (const target of params.resolvedTargets) {
+    if (target.status !== "ok") {
+      continue;
+    }
+
+    const slideNode = (slides[target.slide - 1] && typeof slides[target.slide - 1] === "object" ? slides[target.slide - 1] : {}) as Record<string, unknown>;
     const slideWidth = readNum(slideNode.width) ?? defaultSlideWidth;
     const slideHeight = readNum(slideNode.height) ?? defaultSlideHeight;
     const elements = Array.isArray(slideNode.elements) ? slideNode.elements : [];
 
-    for (const [elementRaw, slotRaw] of Object.entries(imageAt)) {
-      const element = Number.parseInt(elementRaw, 10);
-      const slotId = typeof slotRaw === "string" ? slotRaw : "";
-      if (!Number.isInteger(element) || element < 0 || !slotId) {
-        continue;
-      }
+    const elementNode = (elements[target.currentIndex ?? -1] && typeof elements[target.currentIndex ?? -1] === "object"
+      ? elements[target.currentIndex ?? -1]
+      : {}) as Record<string, unknown>;
 
-      const elementNode = (elements[element] && typeof elements[element] === "object" ? elements[element] : {}) as Record<string, unknown>;
-      const width = readNum(elementNode.width);
-      const height = readNum(elementNode.height);
+    const width = readNum(elementNode.width);
+    const height = readNum(elementNode.height);
 
-      const aspect = resolveAspect({ width, height });
-      const kind = resolveKind({ slotId, width, height, slideWidth, slideHeight });
-      const semantic = semanticFromSlot(slotId, kind);
-      const styleHint = styleFromKind(kind);
-      const negative = kind === "icon"
-        ? ["watermark", "nsfw", "lowres", "photo background"]
-        : ["watermark", "nsfw", "lowres"];
-      const query = trim(`${base} ${semantic} слайд ${slide}`.trim(), 120);
-      const hint = `Подбери изображение: ${semantic}; стиль: ${styleHint}; избегать: ${negative.join(", ")}`;
+    const aspect = resolveAspect({ width, height });
+    const kind = resolveKind({ slotId: target.slotId, width, height, slideWidth, slideHeight });
+    const semantic = semanticFromSlot(target.slotId, kind);
+    const styleHint = styleFromKind(kind);
+    const negative = kind === "icon"
+      ? ["watermark", "nsfw", "lowres", "photo background"]
+      : ["watermark", "nsfw", "lowres"];
+    const query = trim(`${base} ${semantic} слайд ${target.slide}`.trim(), 120);
+    const hint = `Подбери изображение: ${semantic}; стиль: ${styleHint}; избегать: ${negative.join(", ")}`;
 
-      slots.push({
-        slotId,
-        slide,
-        element,
-        kind,
-        query,
-        hint,
-        styleHint,
-        negative,
-        aspect,
-        priority: priorityFromKind(kind),
-        sourcePolicy: { mode: "user_confirmed", requireSourceOpen: true },
-        suggestedCount: kind === "icon" ? 6 : 8,
-      });
-    }
+    slots.push({
+      slotId: target.slotId,
+      slide: target.slide,
+      element: target.currentIndex ?? 0,
+      elementId: target.elementId,
+      kind,
+      query,
+      hint,
+      styleHint,
+      negative,
+      aspect,
+      priority: priorityFromKind(kind),
+      sourcePolicy: { mode: "user_confirmed", requireSourceOpen: true },
+      suggestedCount: kind === "icon" ? 6 : 8,
+    });
   }
 
   const result: ImagePlanV1 = {
@@ -215,4 +329,25 @@ export const buildImagePlanFromMap = (params: {
   };
 
   return imagePlanSchema.parse(result);
+};
+
+export const buildImagePlanFromMap = (params: {
+  map: unknown;
+  doc: unknown;
+  presentationId: number | string;
+  themeId: string;
+  topic: string;
+  language: string | null;
+}): ImagePlanV1 => {
+  const targets = collectImageTargetsFromMap({ map: params.map, doc: params.doc });
+  const resolvedTargets = remapImageTargetsToDoc({ targets, doc: params.doc });
+
+  return buildImagePlanFromResolvedTargets({
+    resolvedTargets,
+    doc: params.doc,
+    presentationId: params.presentationId,
+    themeId: params.themeId,
+    topic: params.topic,
+    language: params.language,
+  });
 };
