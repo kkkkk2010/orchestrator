@@ -9,7 +9,7 @@ import { assertThemeTemplateExists, getThemeDir, readThemeMap, readThemeSafe } f
 import { readDocJsonFromTemplateZip } from "./themes/templateZip";
 import { extractImageSlots, extractPlaceholderLocations, inferSlideCount, normalizePlaceholders } from "./themes/parseDoc";
 import { applyVariants } from "./templates/applyVariants";
-import { applyFills } from "./templates/applyFills";
+import { applyFillsByLocations, scanRemainingFillTokens } from "./templates/applyFills";
 import { assembleZip } from "./templates/assembleZip";
 import { planImageReplacements } from "./images/planImageReplacements";
 import { buildImagePlanFromMap, buildImagePlanWithDiagnostics } from "./images/imagePlan";
@@ -138,16 +138,6 @@ const calcRetryDelayMs = (attempt: number): number => {
   return backoff + jitter;
 };
 
-const buildTestFills = (fillKeys: string[]): Record<string, string> => {
-  const fills: Record<string, string> = {};
-
-  for (const key of fillKeys) {
-    fills[key] = `TEST_${key}`;
-  }
-
-  return fills;
-};
-
 
 const applyImagePlanPatch = (params: {
   imagePlanDocument: ReturnType<typeof buildImagePlanFromMap>;
@@ -218,9 +208,9 @@ const worker = new Worker(
 
     const preVariantDoc = JSON.parse(JSON.stringify(doc)) as unknown;
 
-    const placeholderNormalization = normalizePlaceholders(doc);
-    const placeholderScan = extractPlaceholderLocations(doc);
-    const fillKeys = [...new Set(placeholderScan.locations.map((item) => item.key))];
+    normalizePlaceholders(doc);
+    const initialPlaceholderScan = extractPlaceholderLocations(doc);
+    const initialFillKeys = [...new Set(initialPlaceholderScan.locations.map((item) => item.key))];
     const imageSlots = extractImageSlots(doc);
     const slideCount = inferSlideCount(doc);
     mark("parse_doc");
@@ -331,6 +321,21 @@ const worker = new Worker(
     }
 
     const map = await readThemeMap(themeId);
+    const debugFillsRaw = job.data?.debug?.fills;
+    const debugFills = (debugFillsRaw && typeof debugFillsRaw === "object" ? debugFillsRaw : {}) as Record<string, string>;
+    const debugFillsApplied = Object.keys(debugFills).length > 0;
+
+    const variantSeedFills = { ...mergeFills(initialFillKeys, {}, "TEST_"), ...debugFills };
+    const variantsStats = applyVariants(doc, map, { presentationId }, variantSeedFills, {
+      onDropAtOutOfRange: ({ slideIndex, badIndex }) => {
+        jobLogger.warn({ slideIndex, badIndex }, "dropAt index out of range");
+      },
+    });
+
+    const normalizedAfterVariants = normalizePlaceholders(doc);
+    const placeholderScan = extractPlaceholderLocations(doc);
+    const fillKeys = [...new Set(placeholderScan.locations.map((item) => item.key))];
+
     let llmFills: Record<string, string> = {};
     let llmError: string | undefined;
     let llmMeta: {
@@ -418,7 +423,7 @@ const worker = new Worker(
     };
 
     if (LLM_ENABLED && fillKeys.length > 0) {
-      await job.updateProgress(72);
+      await job.updateProgress(73);
       jobLogger.info({ stage: "llm_generate" }, "progress updated");
       llmDiagnostics.attempted = true;
 
@@ -497,10 +502,7 @@ const worker = new Worker(
     }
 
     const generatedFills = mergeFills(fillKeys, llmFills, "TEST_");
-    const debugFillsRaw = job.data?.debug?.fills;
-    const debugFills = (debugFillsRaw && typeof debugFillsRaw === "object" ? debugFillsRaw : {}) as Record<string, string>;
     const fills = { ...generatedFills, ...debugFills };
-    const debugFillsApplied = Object.keys(debugFills).length > 0;
 
     const fallbackKeysCount = fillKeys.filter((key) => {
       if (Object.prototype.hasOwnProperty.call(debugFills, key)) {
@@ -508,18 +510,16 @@ const worker = new Worker(
       }
       return fills[key] === `TEST_${key}`;
     }).length;
+
     llmDiagnostics.receivedKeysCount = Object.keys(llmFills).length;
     llmDiagnostics.missingKeysCount = Math.max(0, fillKeys.length - llmDiagnostics.receivedKeysCount);
     llmDiagnostics.usedFallbackForAll = fillKeys.length > 0 && fallbackKeysCount === fillKeys.length;
+
+    const fillsStats = applyFillsByLocations(doc, placeholderScan.locations, fills);
+    const remainingFillTokenStats = scanRemainingFillTokens(doc);
+
     await job.updateProgress(75);
     jobLogger.info({ stage: "apply_variants_fills" }, "progress updated");
-
-    const variantsStats = applyVariants(doc, map, { presentationId }, fills, {
-      onDropAtOutOfRange: ({ slideIndex, badIndex }) => {
-        jobLogger.warn({ slideIndex, badIndex }, "dropAt index out of range");
-      },
-    });
-    const fillsStats = applyFills(doc, fills);
     mark("apply_variants_fills");
 
 
@@ -585,7 +585,7 @@ const worker = new Worker(
           count: placeholderScan.locations.length,
           locations: placeholderScan.locations,
           bySlide: placeholdersBySlide,
-          normalizedCount: placeholderNormalization.normalizedCount,
+          normalizedCount: normalizedAfterVariants.normalizedCount,
         },
         imagePlan: {
           ...imagePlanBuild.diagnostics,
@@ -597,6 +597,14 @@ const worker = new Worker(
             : "No final slots resolved. Check imageAt bindings or auto-detect settings.",
         },
         llm: llmDiagnostics,
+        fills: {
+          fillKeysCount: fillKeys.length,
+          receivedKeysCount: llmDiagnostics.receivedKeysCount,
+          missingKeysCount: llmDiagnostics.missingKeysCount,
+          remainingTestTokensCount: remainingFillTokenStats.remainingTestTokensCount,
+          remainingMustacheTokensCount: remainingFillTokenStats.remainingMustacheTokensCount,
+          remainingSamples: remainingFillTokenStats.remainingSamples,
+        },
         stats: {
           slides: slideCount,
           elementsScanned: placeholderScan.elementsScanned,
@@ -961,6 +969,8 @@ const worker = new Worker(
         imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
         diagnosticsIncluded,
         usedFallbackForAll: llmDiagnostics.usedFallbackForAll,
+        remainingTestTokensCount: remainingFillTokenStats.remainingTestTokensCount,
+        remainingMustacheTokensCount: remainingFillTokenStats.remainingMustacheTokensCount,
         imageReplacedCount,
         imageMissing: imageMissingCapped,
         backgroundsPlannedCount: slideCount,
@@ -1038,6 +1048,8 @@ const worker = new Worker(
         imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
         diagnosticsIncluded,
         usedFallbackForAll: llmDiagnostics.usedFallbackForAll,
+        remainingTestTokensCount: remainingFillTokenStats.remainingTestTokensCount,
+        remainingMustacheTokensCount: remainingFillTokenStats.remainingMustacheTokensCount,
         imageReplacedCount,
         imageMissingCount: imageMissing.length,
         backgroundsPlannedCount: slideCount,

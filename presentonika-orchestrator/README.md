@@ -724,11 +724,15 @@ C) RAG unavailable
    - `attempted`, `ok`, `parseOk`, `parseError`
    - `receivedKeysCount`, `missingKeysCount`
    - `usedFallbackForAll`
+5) `out.zip -> diagnostics.json -> fills`:
+   - `remainingTestTokensCount` и `remainingMustacheTokensCount`
+   - `remainingSamples`
 
 Быстрый признак причины:
 - `usedFallbackForAll=true` + `parseError` => ответ не распарсился/не провалидировался.
 - `fillKeysCount=0` => placeholders не были найдены в template.
 - `LLM_ENABLED=true` и пустой ключ => `error` с `LLMConfigError`.
+- если `llm.ok=true`, но текст не заменился — проверь `diagnostics.fills.remainingTestTokensCount`.
 
 ## Как включить DeepSeek + RAG (пошагово)
 
