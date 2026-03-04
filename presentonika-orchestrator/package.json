@@ -14,7 +14,8 @@
     "theme:validate": "tsx src/tools/themeValidate.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/server.js",
-    "start:prod": "concurrently \"npm:start\" \"npm:start:worker\""
+    "start:prod": "concurrently \"npm:start\" \"npm:start:worker\"",
+    "test": "tsx src/tests/run.ts"
   },
   "dependencies": {
     "bullmq": "^5.12.7",

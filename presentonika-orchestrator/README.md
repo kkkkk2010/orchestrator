@@ -608,65 +608,51 @@ curl -i 'https://editor.presentonika.ru/staged/<name>.out.zip?t=<token>'
 
 ## Этап: ImagePlan v1
 
-Теперь orchestrator всегда добавляет в корень `out.zip` файл `imagePlan.json`.
+Теперь orchestrator всегда добавляет в корень `out.zip` файлы:
+- `imagePlan.json`
+- `diagnostics.json`
 
-Также best-effort копия сохраняется в `.tmp/<jobId>/imagePlan.json` для отладки.
+Их best-effort копии сохраняются в `.tmp/<jobId>/imagePlan.json` и `.tmp/<jobId>/diagnostics.json`.
 
-Формат (`version=1`):
-- `presentationId`, `themeId`, `topic`, `language`, `createdAt`
-- `slots[]` из `map.json -> slides[N].imageAt`, где:
-  - `slide` — 1-based
-  - `element` — 0-based
-  - `slotId` — значение из `imageAt`
-  - `kind` — `hero|photo|icon|other`
-  - `query`, `hint` — поисковая и UI-эвристика
-  - optional поля (backward compatible):
-    - `styleHint?: string`
-    - `negative?: string[]`
-    - `aspect?: "portrait"|"landscape"|"square"|"any"`
-    - `priority?: number` (1..5)
-    - `sourcePolicy?: { mode: "user_confirmed", requireSourceOpen?: boolean }`
-    - `suggestedCount?: number` (5..10)
+### Как строятся imagePlan slots
 
-Если в `map.json` нет `imageAt`, `imagePlan.json` всё равно создаётся, но `slots: []`.
+1) Сначала auto-detect ищет image placeholders в `doc.json` (по `meta/name/src/tags` + fallback для non-decor image).
+2) Затем `map.json -> slides[N].imageAt` применяется как override (переименование slotId и/или forced binding).
+3) После `dropAt/drop` индексы ремапятся по `elementId`; удалённые элементы исключаются из финальных `slots`.
 
-Пример slot:
-
-```json
-{
-  "slotId": "s1_hero",
-  "slide": 1,
-  "element": 2,
-  "kind": "hero",
-  "query": "Стили речи обложка слайд 1",
-  "hint": "Подбери изображение: обложка; стиль: minimal; избегать: watermark, nsfw, lowres",
-  "styleHint": "minimal",
-  "negative": ["watermark", "nsfw", "lowres"],
-  "aspect": "landscape",
-  "priority": 5,
-  "sourcePolicy": { "mode": "user_confirmed", "requireSourceOpen": true },
-  "suggestedCount": 8
-}
-```
+Новые env-флаги:
+- `IMAGEPLAN_AUTO_DETECT=true`
+- `IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR=true`
 
 ### Manual проверка
 
 1) Создать job (`themeId: teacher-dark` или `_example`).
 2) Дождаться `state=completed`.
-3) Проверить, что в `out/<jobId>.out.zip` есть `imagePlan.json`:
+3) Проверить `imagePlan.json` и `diagnostics.json` в zip:
 
 ```bash
-unzip -l out/<jobId>.out.zip | rg imagePlan.json
-```
-
-4) Посмотреть содержимое:
-
-```bash
+unzip -l out/<jobId>.out.zip | rg "imagePlan.json|diagnostics.json"
 unzip -p out/<jobId>.out.zip imagePlan.json | jq .
+unzip -p out/<jobId>.out.zip diagnostics.json | jq .
 ```
 
-5) Убедиться, что `version=1`, а `slots[]` соответствует `map.json -> imageAt`.
-   Для тем без `imageAt`: `slots` должен быть пустым массивом.
+4) Убедиться:
+- `imagePlan.version == 1`
+- `slots` не пустой (если на слайдах есть placeholders)
+- `returnValue.assemble.imageSlotCount`, `imageSlotsDroppedCount`, `imageSlotsInvalidCount`, `imagePlanMode` заполнены.
+
+5) Если `slotCount=0`, проверить:
+- `diagnostics.imagePlan.mode`
+- `diagnostics.imagePlan.invalidReasons`
+- `map.json -> slides[N].imageAt` (опционально)
+
+### Placeholder нормализация
+
+Перед генерацией fillKeys orchestrator делает best-effort нормализацию:
+- `{{ key }}` -> `{{key}}`
+- безопасная склейка split-runs вида `"{{" + "key" + "}}"`
+
+Это уменьшает случаи, когда `{{key}}` пропускается и остаётся `TEST_key`.
 
 ## RAG integration (FastAPI microservice)
 

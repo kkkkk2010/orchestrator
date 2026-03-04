@@ -6,12 +6,12 @@ import { getQueueName, getQueueRedisConnection, getWorkerBullConnection } from "
 import { logger } from "./logger";
 import { assertThemeTemplateExists, getThemeDir, readThemeMap, readThemeSafe } from "./themes/themeStore";
 import { readDocJsonFromTemplateZip } from "./themes/templateZip";
-import { extractFillKeys, extractImageSlots, inferSlideCount } from "./themes/parseDoc";
+import { extractImageSlots, extractPlaceholderLocations, inferSlideCount, normalizePlaceholders } from "./themes/parseDoc";
 import { applyVariants } from "./templates/applyVariants";
 import { applyFills } from "./templates/applyFills";
 import { assembleZip } from "./templates/assembleZip";
 import { planImageReplacements } from "./images/planImageReplacements";
-import { buildImagePlanFromMap } from "./images/imagePlan";
+import { buildImagePlanFromMap, buildImagePlanWithDiagnostics } from "./images/imagePlan";
 import { generateBackgrounds } from "./backgrounds/generateBackgrounds";
 import { normalizeBackgroundTheme } from "./backgrounds/theme";
 import { uploadOutzip } from "./wp/uploadOutzip";
@@ -65,6 +65,8 @@ const MAX_SLIDES = parseInt(process.env.MAX_SLIDES || "30", 10);
 const MAX_TEMPLATE_ZIP_BYTES = parseInt(process.env.MAX_TEMPLATE_ZIP_BYTES || "200000000", 10);
 const MAX_OUTZIP_BYTES_LOCAL = parseInt(process.env.MAX_OUTZIP_BYTES_LOCAL || "250000000", 10);
 const MAX_STAGED_BYTES = parseInt(process.env.MAX_STAGED_BYTES || String(MAX_OUTZIP_BYTES_LOCAL), 10);
+const IMAGEPLAN_AUTO_DETECT = process.env.IMAGEPLAN_AUTO_DETECT !== "false";
+const IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR = process.env.IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR !== "false";
 
 
 const cleanupStagedFile = async (params: {
@@ -212,7 +214,11 @@ const worker = new Worker(
     await job.updateProgress(60);
     jobLogger.info({ stage: "parse_doc" }, "progress updated");
 
-    const fillKeys = extractFillKeys(doc);
+    const preVariantDoc = JSON.parse(JSON.stringify(doc)) as unknown;
+
+    const placeholderNormalization = normalizePlaceholders(doc);
+    const placeholderScan = extractPlaceholderLocations(doc);
+    const fillKeys = [...new Set(placeholderScan.locations.map((item) => item.key))];
     const imageSlots = extractImageSlots(doc);
     const slideCount = inferSlideCount(doc);
     mark("parse_doc");
@@ -408,19 +414,32 @@ const worker = new Worker(
 
 
     const imagePlanTmpPath = path.resolve(".tmp", jobId, "imagePlan.json");
+    const diagnosticsTmpPath = path.resolve(".tmp", jobId, "diagnostics.json");
     let imagePlanDocument: ReturnType<typeof buildImagePlanFromMap> | null = null;
     let imagePlanJsonString: string | null = null;
     let imagePlanIncluded = false;
+    let imagePlanMode: "auto_detect" | "map_only" | "mixed" | "disabled" | "empty" = "empty";
+    let imageSlotsDroppedCount = 0;
+    let imageSlotsInvalidCount = 0;
+    let diagnosticsJsonString: string | null = null;
+    let diagnosticsIncluded = false;
 
     try {
-      imagePlanDocument = buildImagePlanFromMap({
+      const imagePlanBuild = buildImagePlanWithDiagnostics({
         map,
-        doc,
+        originalDoc: preVariantDoc,
+        currentDoc: doc,
         presentationId,
         themeId,
         topic: typeof job.data?.topic === "string" ? job.data.topic : "",
         language: typeof job.data?.language === "string" ? job.data.language : null,
+        autoDetect: IMAGEPLAN_AUTO_DETECT,
+        fallbackAllNonDecor: IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR,
       });
+      imagePlanDocument = imagePlanBuild.imagePlan;
+      imagePlanMode = imagePlanBuild.diagnostics.mode;
+      imageSlotsDroppedCount = imagePlanBuild.diagnostics.droppedCount;
+      imageSlotsInvalidCount = imagePlanBuild.diagnostics.invalidCount;
 
       if (llmImagePlanPatch && llmImagePlanPatch.slots.length > 0) {
         applyImagePlanPatch({ imagePlanDocument, patch: llmImagePlanPatch });
@@ -432,10 +451,59 @@ const worker = new Worker(
       await fs.writeFile(imagePlanTmpPath, imagePlanJsonString).catch((error) => {
         jobLogger.warn({ err: error, imagePlanTmpPath }, "unable to persist imagePlan tmp file");
       });
+
+      const placeholdersBySlide = placeholderScan.locations.reduce<Record<string, { count: number; keys: string[] }>>((acc, location) => {
+        const slideKey = String(location.slide);
+        if (!acc[slideKey]) {
+          acc[slideKey] = { count: 0, keys: [] };
+        }
+        acc[slideKey].count += 1;
+        if (!acc[slideKey].keys.includes(location.key)) {
+          acc[slideKey].keys.push(location.key);
+        }
+        return acc;
+      }, {});
+
+      const diagnostics = {
+        version: 1,
+        presentationId,
+        themeId,
+        topic: typeof job.data?.topic === "string" ? job.data.topic : "",
+        createdAt: new Date().toISOString(),
+        placeholders: {
+          keys: fillKeys,
+          count: placeholderScan.locations.length,
+          locations: placeholderScan.locations,
+          bySlide: placeholdersBySlide,
+          normalizedCount: placeholderNormalization.normalizedCount,
+        },
+        imagePlan: {
+          ...imagePlanBuild.diagnostics,
+          included: imagePlanIncluded,
+          slotCount: imagePlanDocument.slots.length,
+          slots: imagePlanBuild.diagnostics.targetsSample,
+          hint: imagePlanBuild.diagnostics.finalSlotCount > 0
+            ? "Image plan slots resolved for editor picker"
+            : "No final slots resolved. Check imageAt bindings or auto-detect settings.",
+        },
+        stats: {
+          slides: slideCount,
+          elementsScanned: placeholderScan.elementsScanned,
+          placeholdersFound: placeholderScan.locations.length,
+        },
+      };
+
+      diagnosticsJsonString = JSON.stringify(diagnostics, null, 2);
+      diagnosticsIncluded = true;
+      await fs.writeFile(diagnosticsTmpPath, diagnosticsJsonString).catch((error) => {
+        jobLogger.warn({ err: error, diagnosticsTmpPath }, "unable to persist diagnostics tmp file");
+      });
     } catch (error) {
       imagePlanIncluded = false;
       imagePlanDocument = null;
       imagePlanJsonString = null;
+      diagnosticsJsonString = null;
+      diagnosticsIncluded = false;
       jobLogger.warn({ err: error }, "unable to build imagePlan json");
     }
 
@@ -501,6 +569,11 @@ const worker = new Worker(
         ...(ragJsonString && RAG_INCLUDE_IN_OUTZIP
           ? {
               "rag.json": Buffer.from(ragJsonString, "utf8"),
+            }
+          : {}),
+        ...(diagnosticsJsonString
+          ? {
+              "diagnostics.json": Buffer.from(diagnosticsJsonString, "utf8"),
             }
           : {}),
       },
@@ -752,11 +825,30 @@ const worker = new Worker(
         droppedAtCount: variantsStats.droppedAtCount,
         chosenVariants: variantsStats.chosenVariants,
         debugFillsApplied,
+        placeholderCount: placeholderScan.locations.length,
+        placeholderKeys: fillKeys,
+        placeholdersBySlide: placeholderScan.locations.reduce<Record<string, { count: number; keys: string[] }>>((acc, location) => {
+          const slideKey = String(location.slide);
+          if (!acc[slideKey]) {
+            acc[slideKey] = { count: 0, keys: [] };
+          }
+          acc[slideKey].count += 1;
+          if (!acc[slideKey].keys.includes(location.key)) {
+            acc[slideKey].keys.push(location.key);
+          }
+          return acc;
+        }, {}),
         imagePlannedCount: imagePlan.plannedCount,
         imagePlanVersion: 1,
         imagePlanIncluded,
+        imagePlanMode,
         imagePlanSlotsCount: imagePlanDocument ? imagePlanDocument.slots.length : 0,
+        imageSlotCount: imagePlanDocument ? imagePlanDocument.slots.length : 0,
+        imageSlots: imagePlanDocument ? (imagePlanDocument.slots as Array<{ slotId: string; slide: number; element: number }>).map((slot) => ({ slotId: slot.slotId, slide: slot.slide, element: slot.element })) : [],
+        imageSlotsDroppedCount,
+        imageSlotsInvalidCount,
         imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
+        diagnosticsIncluded,
         imageReplacedCount,
         imageMissing: imageMissingCapped,
         backgroundsPlannedCount: slideCount,
@@ -820,8 +912,14 @@ const worker = new Worker(
         imagePlannedCount: imagePlan.plannedCount,
         imagePlanVersion: 1,
         imagePlanIncluded,
+        imagePlanMode,
         imagePlanSlotsCount: imagePlanDocument ? imagePlanDocument.slots.length : 0,
+        imageSlotCount: imagePlanDocument ? imagePlanDocument.slots.length : 0,
+        imageSlots: imagePlanDocument ? (imagePlanDocument.slots as Array<{ slotId: string; slide: number; element: number }>).map((slot) => ({ slotId: slot.slotId, slide: slot.slide, element: slot.element })) : [],
+        imageSlotsDroppedCount,
+        imageSlotsInvalidCount,
         imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
+        diagnosticsIncluded,
         imageReplacedCount,
         imageMissingCount: imageMissing.length,
         backgroundsPlannedCount: slideCount,

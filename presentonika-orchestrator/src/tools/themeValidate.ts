@@ -3,6 +3,7 @@ import path from "node:path";
 import { extractFillKeys, inferSlideCount } from "../themes/parseDoc";
 import { readDocJsonFromTemplateZip } from "../themes/templateZip";
 import { getThemeDir, getThemeMapPath, getThemeTemplateZipPath, getThemeJsonPath } from "../themes/themeStore";
+import { detectPlaceholderImageElements } from "../images/imagePlan";
 
 const MAX_TEMPLATE_ZIP_BYTES = Number.parseInt(process.env.MAX_TEMPLATE_ZIP_BYTES || "200000000", 10);
 
@@ -112,7 +113,25 @@ const run = async (): Promise<void> => {
     );
   });
 
+
+  const detectedPlaceholders = detectPlaceholderImageElements({
+    doc,
+    fallbackAllNonDecor: process.env.IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR !== "false",
+  });
+  if (detectedPlaceholders.length === 0) {
+    warnings.push("No placeholder images detected -> editor 'Подобрать' won't show unless map forces slots");
+  }
+
   const mapSlides = (map.slides && typeof map.slides === "object" ? map.slides : {}) as Record<string, unknown>;
+  const hasAnyImageAt = Object.values(mapSlides).some((slideRuleUnknown) => {
+    const slideRule = (slideRuleUnknown && typeof slideRuleUnknown === "object" ? slideRuleUnknown : {}) as Record<string, unknown>;
+    const imageAt = (slideRule.imageAt && typeof slideRule.imageAt === "object" ? slideRule.imageAt : {}) as Record<string, unknown>;
+    return Object.keys(imageAt).length > 0;
+  });
+  if (!hasAnyImageAt) {
+    warnings.push("map.json has no imageAt bindings; auto-detect will be used for imagePlan slots");
+  }
+
   for (const [slideIndexRaw, slideRuleUnknown] of Object.entries(mapSlides)) {
     const slideIndex = Number.parseInt(slideIndexRaw, 10);
     const slideIdx0 = slideIndex - 1;
