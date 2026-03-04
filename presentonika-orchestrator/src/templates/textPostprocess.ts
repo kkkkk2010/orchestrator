@@ -4,10 +4,9 @@ export type StyleRole = "title" | "subtitle" | "body" | "small" | "muted" | "bul
 
 type TextKind = "title" | "bullets" | "body";
 
-type SizeRange = { min: number; max: number };
-
-type TypographyConfig = {
+export type TypographyConfig = {
   fontFamily: string;
+  scale: number;
   sizes: Record<StyleRole, number>;
   lineHeights: Record<StyleRole, number>;
   colors: {
@@ -44,8 +43,6 @@ export type TypographyApplyStats = {
   themeColorMode: "dark" | "light";
 };
 
-const TEXT_KEYS = new Set(["text", "content", "value"]);
-
 const toRecord = (value: unknown): Record<string, unknown> | null => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -57,6 +54,12 @@ const clip = (value: string, max: number): string => {
   if (value.length <= max) return value;
   const safe = Math.max(1, max - 1);
   return `${value.slice(0, safe)}…`;
+};
+
+const parseTypographyScale = (): number => {
+  const raw = Number.parseFloat(process.env.TYPOGRAPHY_SCALE || "1.35");
+  if (!Number.isFinite(raw) || raw <= 0) return 1.35;
+  return Math.min(2.5, Math.max(0.6, raw));
 };
 
 const guessKind = (key: string): TextKind => {
@@ -83,8 +86,9 @@ const defaultTypography = (themeId: string): TypographyConfig => {
   if (dark) {
     return {
       fontFamily: process.env.FONT_FAMILY_DEFAULT || "Times New Roman",
-      sizes: { title: 44, subtitle: 28, body: 22, small: 18, muted: 18, bullets: 22 },
-      lineHeights: { title: 1.05, subtitle: 1.12, body: 1.18, small: 1.15, muted: 1.15, bullets: 1.18 },
+      scale: parseTypographyScale(),
+      sizes: { title: 60, subtitle: 38, body: 30, small: 23, muted: 23, bullets: 30 },
+      lineHeights: { title: 1.04, subtitle: 1.1, body: 1.16, small: 1.13, muted: 1.13, bullets: 1.16 },
       colors: { title: "#FFFFFF", body: "#F2F2F2", muted: "#CFCFCF" },
       mode: "dark",
     };
@@ -93,8 +97,9 @@ const defaultTypography = (themeId: string): TypographyConfig => {
   const isLight = normalized.includes("light");
   return {
     fontFamily: process.env.FONT_FAMILY_DEFAULT || "Times New Roman",
-    sizes: { title: 44, subtitle: 28, body: 22, small: 18, muted: 18, bullets: 22 },
-    lineHeights: { title: 1.05, subtitle: 1.12, body: 1.18, small: 1.15, muted: 1.15, bullets: 1.18 },
+    scale: parseTypographyScale(),
+    sizes: { title: 60, subtitle: 38, body: 30, small: 23, muted: 23, bullets: 30 },
+    lineHeights: { title: 1.04, subtitle: 1.1, body: 1.16, small: 1.13, muted: 1.13, bullets: 1.16 },
     colors: isLight
       ? { title: "#111111", body: "#222222", muted: "#555555" }
       : { title: "#111111", body: "#111111", muted: "#444444" },
@@ -105,27 +110,29 @@ const defaultTypography = (themeId: string): TypographyConfig => {
 export const resolveThemeTypography = (themeId: string, theme: unknown): TypographyConfig => {
   const base = defaultTypography(themeId);
   const typography = toRecord(toRecord(theme)?.typography);
-  if (!typography) return base;
-
-  const sizes = toRecord(typography.sizes);
-  const lineHeights = toRecord(typography.lineHeights);
-  const colors = toRecord(typography.colors);
+  const sizes = toRecord(typography?.sizes);
+  const lineHeights = toRecord(typography?.lineHeights);
+  const colors = toRecord(typography?.colors);
 
   const readSize = (role: StyleRole): number => readNum(sizes?.[role]) ?? base.sizes[role];
   const readLineHeight = (role: StyleRole): number => readNum(lineHeights?.[role]) ?? base.lineHeights[role];
 
+  const scale = parseTypographyScale();
+  const applyScale = (value: number): number => Math.max(10, Math.round(value * scale));
+
   return {
     ...base,
-    fontFamily: typeof typography.fontFamily === "string" && typography.fontFamily.trim().length > 0
+    scale,
+    fontFamily: typeof typography?.fontFamily === "string" && typography.fontFamily.trim().length > 0
       ? typography.fontFamily
       : base.fontFamily,
     sizes: {
-      title: readSize("title"),
-      subtitle: readSize("subtitle"),
-      body: readSize("body"),
-      small: readSize("small"),
-      muted: readSize("small"),
-      bullets: readSize("body"),
+      title: applyScale(readSize("title")),
+      subtitle: applyScale(readSize("subtitle")),
+      body: applyScale(readSize("body")),
+      small: applyScale(readSize("small")),
+      muted: applyScale(readSize("small")),
+      bullets: applyScale(readSize("body")),
     },
     lineHeights: {
       title: readLineHeight("title"),
@@ -183,7 +190,60 @@ export const normalizeText = (key: string, value: string): string => {
     .filter((part) => part.trim().length > 0)
     .slice(0, 2)
     .join(" ");
-  return clip(sentenceLike || base, role === "body" ? 220 : 160);
+  return clip(sentenceLike || base, role === "body" ? 240 : 180);
+};
+
+export const generateLocalFallbackBullets = (topic: string, slideType: string): string[] => {
+  const root = topic || "теме";
+  if (slideType === "chronology") {
+    return [
+      `• Ключевой этап развития темы «${root}».`,
+      "• Важная дата и ее значение.",
+      "• Последствия и влияние на дальнейшие события.",
+    ];
+  }
+  if (slideType === "examples") {
+    return [
+      `• Практический пример по теме «${root}».`,
+      "• Короткое объяснение, почему пример показателен.",
+      "• Вывод для применения на практике.",
+    ];
+  }
+  return [
+    `• Главная мысль по теме «${root}».`,
+    "• Ключевой термин и его значение.",
+    "• Короткий вывод для закрепления материала.",
+  ];
+};
+
+const tokenize = (text: string): Set<string> => new Set(text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length > 2));
+
+const jaccard = (a: Set<string>, b: Set<string>): number => {
+  if (a.size === 0 || b.size === 0) return 0;
+  let inter = 0;
+  for (const item of a) if (b.has(item)) inter += 1;
+  return inter / (a.size + b.size - inter);
+};
+
+export const dedupeBulletLines = (text: string, topic: string, slideType: string): string => {
+  const lines = toBullets(text)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  const unique: string[] = [];
+  for (const line of lines) {
+    const currentSet = tokenize(line);
+    const nearDuplicate = unique.some((prev) => jaccard(currentSet, tokenize(prev)) > 0.7);
+    if (!nearDuplicate) unique.push(line);
+  }
+
+  while (unique.length < 4) {
+    const fallback = generateLocalFallbackBullets(topic, slideType)[unique.length % 3];
+    unique.push(fallback);
+  }
+
+  return unique.slice(0, 6).join("\n");
 };
 
 const applyTextProps = (record: Record<string, unknown>, props: { fontFamily: string; fontSize: number; lineHeight: number; color: string }): number => {
@@ -209,25 +269,22 @@ const applyTextProps = (record: Record<string, unknown>, props: { fontFamily: st
     }
   }
 
-  const walk = (node: unknown): void => {
+  const walkRuns = (node: unknown): void => {
     if (!node || typeof node !== "object") return;
     if (Array.isArray(node)) {
-      node.forEach(walk);
+      node.forEach(walkRuns);
       return;
     }
-
     const current = node as Record<string, unknown>;
     const style = toRecord(current.style);
     if (style && style.color !== props.color) {
       style.color = props.color;
       touched += 1;
     }
-
-    Object.values(current).forEach(walk);
+    Object.values(current).forEach(walkRuns);
   };
 
-  walk(record.runs);
-
+  walkRuns(record.runs);
   return touched;
 };
 
@@ -254,8 +311,10 @@ export const applyTypographyStandards = (params: {
   for (const location of byElement.values()) {
     const element = getElement(params.doc, location.slide, location.elementIndex);
     if (!element) continue;
+
     const role = styleRoleByKey(location.key);
-    const color = role === "muted" || role === "small" ? params.themeTypography.colors.muted
+    const color = role === "muted" || role === "small"
+      ? params.themeTypography.colors.muted
       : (role === "title" ? params.themeTypography.colors.title : params.themeTypography.colors.body);
 
     touched += applyTextProps(element, {
@@ -274,8 +333,8 @@ export const applyTypographyStandards = (params: {
 };
 
 const charsCapacity = (w: number, h: number, fontSize: number, lineHeight: number): number => {
-  const charsPerLine = Math.max(12, Math.floor(w / (fontSize * 0.55)));
-  const maxLines = Math.max(1, Math.floor(h / (fontSize * lineHeight * 1.1)));
+  const charsPerLine = Math.max(12, Math.floor(w / (fontSize * 0.53)));
+  const maxLines = Math.max(1, Math.floor(h / (fontSize * lineHeight * 1.05)));
   return charsPerLine * maxLines;
 };
 
@@ -295,14 +354,16 @@ export const autoFitText = (params: {
 
     const role = styleRoleByKey(target.key);
     const baseFontSize = params.themeTypography.sizes[role];
-    const minFontSize = role === "title" ? 26 : 16;
+    const minTitle = Math.round(32 * params.themeTypography.scale);
+    const minBody = Math.round(19 * params.themeTypography.scale);
+    const minFontSize = role === "title" ? minTitle : minBody;
     const maxFontSize = baseFontSize;
 
     const text = typeof element.text === "string" ? element.text.trim() : "";
     if (!text) continue;
 
     const width = readNum(element.width) ?? readNum(element.w) ?? 600;
-    const height = readNum(element.height) ?? readNum(element.h) ?? 200;
+    const height = readNum(element.height) ?? readNum(element.h) ?? 220;
     const lineHeight = readNum(toRecord(element.style)?.lineHeight) ?? params.themeTypography.lineHeights[role] ?? 1.15;
 
     const origFontSize = readNum(toRecord(element.style)?.fontSize) ?? baseFontSize;
@@ -322,9 +383,6 @@ export const autoFitText = (params: {
       overflowCount += 1;
       truncatedCount += 1;
       wasTruncated = true;
-      if (role === "bullets") {
-        nextText = toBullets(nextText);
-      }
       nextText = clip(nextText, maxCharsEst);
     }
 
@@ -364,13 +422,8 @@ export const generateLocalFallback = (params: { key: string; topic: string; slid
     return `${topic} — слайд ${params.slideNumber}`;
   }
 
-  if (key.includes("bullets") || key.includes("list") || key.includes("points") || key.includes("step")) {
-    return [
-      `• Ключевая идея по теме «${topic}».`,
-      "• Важный термин и его краткое пояснение.",
-      "• Практический пример применения.",
-      "• Короткий вывод для закрепления.",
-    ].join("\n");
+  if (key.includes("bullets") || key.includes("list") || key.includes("points") || key.includes("step") || key.includes("plan") || key.includes("goals") || key.includes("examples")) {
+    return generateLocalFallbackBullets(topic, "general").join("\n");
   }
 
   return `Краткое пояснение по теме «${topic}» для слайда ${params.slideNumber}.`;

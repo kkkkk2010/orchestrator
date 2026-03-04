@@ -4,14 +4,11 @@ import { extractFillKeys, inferSlideCount } from "../themes/parseDoc";
 import { readDocJsonFromTemplateZip } from "../themes/templateZip";
 import { getThemeDir, getThemeMapPath, getThemeTemplateZipPath, getThemeJsonPath } from "../themes/themeStore";
 import { detectPlaceholderImageElements } from "../images/imagePlan";
+import { REQUIRED_SKELETON_KEYS } from "./skeletonKeys";
+import { buildTemplateQaReport } from "./templateQa";
 
 const MAX_TEMPLATE_ZIP_BYTES = Number.parseInt(process.env.MAX_TEMPLATE_ZIP_BYTES || "200000000", 10);
 
-const REQUIRED_SKELETON_KEYS = [
-  "s1_title", "s1_subtitle", "s1_meta", "s2_title", "s2_goals", "s2_plan", "s3_title", "s4_title", "s4_definition", "s4_keywords",
-  "s5_title", "s5_bullets", "s6_title", "s6_left_title", "s6_left_bullets", "s6_right_title", "s6_right_bullets", "s7_title",
-  "s7_step1", "s7_step2", "s7_step3", "s7_step4", "s8_title", "s8_examples", "s9_title", "s10_title", "s10_summary", "s10_homework", "s10_sources",
-];
 
 const getSlides = (doc: unknown): unknown[] => {
   if (!doc || typeof doc !== "object") return [];
@@ -85,8 +82,20 @@ const run = async (): Promise<void> => {
   const fillKeys = extractFillKeys(doc);
   for (const key of REQUIRED_SKELETON_KEYS) {
     if (!fillKeys.includes(key)) {
-      warnings.push(`skeleton key missing in template fillKeys: ${key}`);
+      errors.push(`skeleton key missing in template fillKeys: ${key}`);
     }
+  }
+
+  try {
+    const qa = await buildTemplateQaReport(themeId);
+    if (qa.textElementsWithoutPlaceholders.length > 0) {
+      warnings.push(`content text elements without placeholders: ${qa.textElementsWithoutPlaceholders.length}`);
+      qa.textElementsWithoutPlaceholders.slice(0, 12).forEach((item) => {
+        warnings.push(`slide ${item.slide} element ${item.elementIndex} has content text without {{key}}`);
+      });
+    }
+  } catch (error) {
+    warnings.push(`template qa summary failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   // background naming warning (do not require file presence in template zip)

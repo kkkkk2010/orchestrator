@@ -15,7 +15,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/server.js",
     "start:prod": "concurrently \"npm:start\" \"npm:start:worker\"",
-    "test": "tsx src/tests/run.ts"
+    "test": "tsx src/tests/run.ts",
+    "template:qa": "tsx src/tools/templateQa.ts",
+    "template:patch": "tsx src/tools/templatePatch.ts"
   },
   "dependencies": {
     "bullmq": "^5.12.7",

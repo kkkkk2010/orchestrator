@@ -19,16 +19,16 @@
   "typography": {
     "fontFamily": "Times New Roman",
     "sizes": {
-      "title": 44,
-      "subtitle": 28,
-      "body": 22,
-      "small": 18
+      "title": 60,
+      "subtitle": 38,
+      "body": 30,
+      "small": 23
     },
     "lineHeights": {
-      "title": 1.05,
-      "subtitle": 1.12,
-      "body": 1.18,
-      "small": 1.15
+      "title": 1.04,
+      "subtitle": 1.1,
+      "body": 1.16,
+      "small": 1.13
     },
     "colors": {
       "title": "#FFFFFF",

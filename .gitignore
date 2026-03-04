@@ -1,0 +1,4 @@
+themes-local/**
+*.out.zip
+presentonika-orchestrator/themes-local/**
+presentonika-orchestrator/*.out.zip

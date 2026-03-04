@@ -48,9 +48,12 @@ const buildImagePromptsUserPrompt = (input: LLMGenerateInput): string => {
     `topic: ${input.topic || "презентация"}`,
     `themeId: ${input.themeId}`,
     `language: ${input.language || "ru"}`,
-    "Для каждого slotId верни конкретный query, 1-строчный hint, styleHint при необходимости.",
+    "Для каждого slotId верни конкретный query и 1-строчный hint.",
+    "Query должен содержать 1-2 конкретные сущности/события/атрибуты со слайда.",
+    "Все query должны быть уникальны (no duplicates).",
+    "Ограничения: query<=90, hint<=140, без кавычек и без двоеточий.",
+    "Избегай слов путь/фото как единственного уточнения; нужна конкретика (год/место/роль/событие).",
     "negative обязательно: [\"watermark\",\"nsfw\",\"lowres\",\"logo\",\"text\"]",
-    "Избегай generic формулировок типа 'topic slide N photo'.",
     `slots: ${slots.join("; ")}`,
   ].join("\n");
 };

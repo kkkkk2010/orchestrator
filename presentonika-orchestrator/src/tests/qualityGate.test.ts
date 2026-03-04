@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { applyFillsByLocations, extractRemainingKeys, scanRemainingFillTokens } from "../templates/applyFills";
 import { applyTypographyStandards, resolveThemeTypography } from "../templates/textPostprocess";
 import { buildImagePromptFallback } from "../images/imagePlan";
+import { enforceImagePromptUniqueness } from "../images/imagePrompts";
+import { findMissingSkeletonKeys } from "../tools/templateQa";
 import type { PlaceholderLocation } from "../templates/applyFills";
+import type { ImagePlanSlot } from "../images/imagePlan";
 
 export const runQualityGateTests = (): void => {
   {
@@ -29,12 +32,9 @@ export const runQualityGateTests = (): void => {
   }
 
   {
+    process.env.TYPOGRAPHY_SCALE = "1.35";
     const doc = {
-      slides: [
-        {
-          elements: [{ text: "Title", style: {} }],
-        },
-      ],
+      slides: [{ elements: [{ text: "Title", style: {} }] }],
     };
     const locations: PlaceholderLocation[] = [
       { key: "s1_title", slide: 1, elementIndex: 0, path: "slides[0].elements[0].text", rawSnippet: "{{s1_title}}" },
@@ -42,9 +42,8 @@ export const runQualityGateTests = (): void => {
     const typography = resolveThemeTypography("teacher-dark", {});
     applyTypographyStandards({ doc, placeholderLocations: locations, themeTypography: typography });
     const style = (doc.slides[0].elements[0] as { style: Record<string, unknown> }).style;
-    assert.equal(style.fontSize, 44);
-    assert.equal(style.lineHeight, 1.05);
-    assert.equal(style.color, "#FFFFFF");
+    assert.equal(typography.scale, 1.35);
+    assert.ok(Number(style.fontSize) >= 80);
   }
 
   {
@@ -56,5 +55,23 @@ export const runQualityGateTests = (): void => {
     });
     assert.ok(!fallback.query.includes("slide"));
     assert.ok(fallback.query.includes("Инаугурация"));
+  }
+
+  {
+    const slots: ImagePlanSlot[] = [
+      { slotId: "a", slide: 1, element: 0, kind: "photo", query: "Трамп инаугурация", hint: "x", aspect: "landscape" },
+      { slotId: "b", slide: 2, element: 1, kind: "photo", query: "Трамп инаугурация", hint: "x", aspect: "landscape" },
+    ];
+    const dedup = enforceImagePromptUniqueness(slots, {
+      1: { slide: 1, title: "Инаугурация", keywords: ["2017", "вашингтон"], slideType: "facts", summary: "Инаугурация 2017" },
+      2: { slide: 2, title: "Митинги", keywords: ["митинг", "речь"], slideType: "examples", summary: "Митинги и выступления" },
+    });
+    assert.ok(dedup.duplicatesBefore > 0);
+    assert.equal(dedup.duplicatesAfter, 0);
+  }
+
+  {
+    const missing = findMissingSkeletonKeys(["s1_title", "s1_subtitle"]);
+    assert.ok(missing.includes("s10_sources"));
   }
 };

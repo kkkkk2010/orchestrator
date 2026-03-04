@@ -795,3 +795,21 @@ unzip -p out/<jobId>.out.zip doc.json | rg "TEST_|{{"
 - `.fills.finalRemainingTestTokensCount == 0`
 - `.fills.finalRemainingMustacheTokensCount == 0`
 - во втором выводе нет совпадений.
+
+## Template QA
+
+```bash
+npm run template:qa -- teacher-dark
+npm run theme:validate -- teacher-dark
+```
+
+Patch helper (best-effort):
+
+```bash
+npm run template:patch -- teacher-dark --from-report
+npm run template:patch -- teacher-dark --from-report --apply
+```
+
+Workflow details: `docs/template-workflow.md`.
+
+By default orchestrator uses `THEMES_DIR=themes-local` when that folder exists; otherwise fallback is `themes`.

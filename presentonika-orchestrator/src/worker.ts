@@ -13,6 +13,7 @@ import { applyFillsByLocations, extractRemainingKeys, scanRemainingFillTokens } 
 import { assembleZip } from "./templates/assembleZip";
 import { planImageReplacements } from "./images/planImageReplacements";
 import { buildImagePlanFromMap, buildImagePlanWithDiagnostics, buildImagePromptFallback } from "./images/imagePlan";
+import { applySlideTypeHeuristics, buildSlideSummaries, enforceImagePromptUniqueness } from "./images/imagePrompts";
 import { generateBackgrounds } from "./backgrounds/generateBackgrounds";
 import { normalizeBackgroundTheme } from "./backgrounds/theme";
 import { uploadOutzip } from "./wp/uploadOutzip";
@@ -28,7 +29,7 @@ import { buildSystemPrompt, buildUserPrompt } from "./llm/prompt";
 import { mergeFills } from "./llm/mergeFills";
 import { aggregateFillCounts, buildBatches } from "./llm/batching";
 import { calcLlmRetryDelayMs, isRetryableLlmError } from "./llm/retry";
-import { applyTypographyStandards, autoFitText, generateLocalFallback, normalizeText, resolveThemeTypography } from "./templates/textPostprocess";
+import { applyTypographyStandards, autoFitText, dedupeBulletLines, generateLocalFallback, generateLocalFallbackBullets, normalizeText, resolveThemeTypography, styleRoleByKey } from "./templates/textPostprocess";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
@@ -75,6 +76,7 @@ const LLM_RETRY_BASE_DELAY_MS = Number.parseInt(process.env.LLM_RETRY_BASE_DELAY
 const LLM_RETRY_MAX_DELAY_MS = Number.parseInt(process.env.LLM_RETRY_MAX_DELAY_MS || "5000", 10);
 const LLM_RETRY_ON_ABORT = process.env.LLM_RETRY_ON_ABORT !== "false";
 const FAIL_ON_REMAINING_TOKENS = process.env.FAIL_ON_REMAINING_TOKENS === "true";
+const DEDUP_ENABLED = process.env.DEDUP_ENABLED !== "false";
 
 const MAX_SLIDES = parseInt(process.env.MAX_SLIDES || "30", 10);
 const MAX_TEMPLATE_ZIP_BYTES = parseInt(process.env.MAX_TEMPLATE_ZIP_BYTES || "200000000", 10);
@@ -195,35 +197,6 @@ const extractSlideFromKey = (key: string): number => {
   if (!match?.[1]) return 1;
   const num = Number.parseInt(match[1], 10);
   return Number.isFinite(num) && num > 0 ? num : 1;
-};
-
-const buildSlideSummaries = (fills: Record<string, string>, slideCount: number): Record<number, string> => {
-  const summaries: Record<number, string> = {};
-  const bySlide: Record<number, string[]> = {};
-
-  for (const [key, value] of Object.entries(fills)) {
-    const slide = extractSlideFromKey(key);
-    bySlide[slide] = bySlide[slide] || [];
-    bySlide[slide].push(`${key}: ${value}`);
-  }
-
-  for (let slide = 1; slide <= slideCount; slide += 1) {
-    const rows = bySlide[slide] || [];
-    const title = rows.find((row) => row.includes("_title")) || rows[0] || "";
-    const body = rows.slice(1).join(" ");
-    const keywords = body
-      .replace(/[•.,;:()]/g, " ")
-      .split(/\s+/)
-      .map((item) => item.trim())
-      .filter((item) => item.length > 4)
-      .slice(0, 6)
-      .join(" ");
-
-    const summary = `${title.replace(/^[^:]+:\s*/, "")} ${keywords}`.trim().replace(/\s+/g, " ");
-    summaries[slide] = summary.length > 180 ? `${summary.slice(0, 179)}…` : summary;
-  }
-
-  return summaries;
 };
 
 const worker = new Worker(
@@ -640,6 +613,35 @@ const worker = new Worker(
       fills[key] = normalizeText(key, fills[key]);
     }
 
+    const slideSummariesForContent = buildSlideSummaries(fills, slideCount);
+    for (const [key, value] of Object.entries(fills)) {
+      const role = styleRoleByKey(key);
+      if (role === "bullets" || key.includes("_plan") || key.includes("_goals") || key.includes("_examples")) {
+        const match = key.match(/^s(\d+)_/i);
+        const slide = match?.[1] ? Number.parseInt(match[1], 10) : 1;
+        const slideType = slideSummariesForContent[slide]?.slideType || "general";
+        if (DEDUP_ENABLED) {
+          fills[key] = dedupeBulletLines(value, topic, slideType);
+        } else {
+          const lines = value.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+          while (lines.length < 4) {
+            const fallback = generateLocalFallbackBullets(topic, slideType)[lines.length % 3];
+            lines.push(fallback);
+          }
+          fills[key] = lines.slice(0, 6).map((line) => line.startsWith("•") ? line : `• ${line}`).join("\n");
+        }
+      }
+
+      if (key.endsWith("_sources") || key.includes("sources")) {
+        if (!ragEnabledForJob || ragHitCount === 0) {
+          fills[key] = "Источники: учебник, энциклопедии, официальные документы, проверенные обзоры.";
+        } else {
+          const sourceUris = (ragSources || ragCitations || []).map((item) => item.source_uri).filter((uri): uri is string => typeof uri === "string").slice(0, 5);
+          fills[key] = sourceUris.length > 0 ? `Источники: ${sourceUris.join("; ")}` : fills[key];
+        }
+      }
+    }
+
     const fallbackKeysCount = fillKeys.filter((key) => {
       if (Object.prototype.hasOwnProperty.call(debugFills, key)) return false;
       return fills[key] === `TEST_${key}`;
@@ -755,7 +757,7 @@ const worker = new Worker(
     let imageSlotsInvalidCount = 0;
     let diagnosticsJsonString: string | null = null;
     let diagnosticsIncluded = false;
-    const imagePromptsDiagnostics = { attempted: false, ok: false, slotCount: 0, filledCount: 0, missingCount: 0, sample: [] as Array<{ slotId: string; query: string }> };
+    const imagePromptsDiagnostics = { attempted: false, ok: false, slotCount: 0, filledCount: 0, missingCount: 0, duplicatesBefore: 0, duplicatesAfter: 0, sample: [] as Array<{ slotId: string; query: string }> };
 
     try {
       const imagePlanBuild = buildImagePlanWithDiagnostics({
@@ -784,7 +786,7 @@ const worker = new Worker(
         imagePromptsDiagnostics.attempted = true;
         try {
           const llmClient = new DeepSeekClient();
-          const batches = chunkKeys(imagePlanDocument.slots, 7);
+          const batches = chunkKeys(imagePlanDocument.slots as Array<{ slotId: string; slide: number; kind: "hero" | "photo" | "icon" | "other"; aspect?: "portrait" | "landscape" | "square" | "any" }>, 7);
           let generatedCount = 0;
           for (const batch of batches) {
             const response = await llmClient.generate({
@@ -800,7 +802,7 @@ const worker = new Worker(
                 slide: slot.slide,
                 kind: slot.kind,
                 aspect: slot.aspect,
-                slideSummary: slideSummaries[slot.slide] || topic,
+                slideSummary: slideSummaries[slot.slide]?.summary || topic,
               })),
             });
             const patchSlots = response.imagePlanPatch?.slots || [];
@@ -816,13 +818,13 @@ const worker = new Worker(
         }
       }
 
-      for (const slot of imagePlanDocument.slots) {
+      for (const slot of imagePlanDocument.slots as Array<{ slotId: string; slide: number; kind: "hero" | "photo" | "icon" | "other"; query: string; hint: string | null; negative?: string[]; styleHint?: string }>) {
         const needsFallback = !slot.query || slot.query.toLowerCase().includes("слайд") || slot.query.toLowerCase().includes("topic");
         if (needsFallback) {
           const fallback = buildImagePromptFallback({
             topic,
             slideTitle: fills[`s${slot.slide}_title`] || "",
-            slideSummary: slideSummaries[slot.slide] || topic,
+            slideSummary: slideSummaries[slot.slide]?.summary || topic,
             kind: slot.kind,
           });
           slot.query = fallback.query;
@@ -832,8 +834,20 @@ const worker = new Worker(
         }
       }
 
-      imagePromptsDiagnostics.sample = imagePlanDocument.slots.slice(0, 8).map((slot) => ({ slotId: slot.slotId, query: slot.query }));
-      imagePromptsDiagnostics.missingCount = imagePlanDocument.slots.filter((slot) => !slot.query || slot.query.trim().length < 5).length;
+      for (const slot of imagePlanDocument.slots as Array<{ slotId: string; slide: number; kind: "hero" | "photo" | "icon" | "other"; query: string; hint: string | null; negative?: string[]; styleHint?: string }>) {
+        const summary = slideSummaries[slot.slide];
+        slot.query = applySlideTypeHeuristics(slot.query, summary?.slideType || "general");
+        slot.query = slot.query.replace(/["':]/g, "").replace(/\s+/g, " ").trim();
+        if (slot.hint) {
+          slot.hint = slot.hint.replace(/["':]/g, "").replace(/\s+/g, " ").trim();
+        }
+      }
+
+      const dedupStats = enforceImagePromptUniqueness(imagePlanDocument.slots, slideSummaries);
+      imagePromptsDiagnostics.duplicatesBefore = dedupStats.duplicatesBefore;
+      imagePromptsDiagnostics.duplicatesAfter = dedupStats.duplicatesAfter;
+      imagePromptsDiagnostics.sample = (imagePlanDocument.slots as Array<{ slotId: string; query: string }>).slice(0, 8).map((slot) => ({ slotId: slot.slotId, query: slot.query }));
+      imagePromptsDiagnostics.missingCount = (imagePlanDocument.slots as Array<{ query: string }>).filter((slot) => !slot.query || slot.query.trim().length < 5).length;
 
       imagePlanJsonString = JSON.stringify(imagePlanDocument, null, 2);
       imagePlanIncluded = true;
@@ -886,6 +900,8 @@ const worker = new Worker(
           colorsApplied: typographyStats.colorsApplied,
           themeColorMode: typographyStats.themeColorMode,
           touched: typographyStats.touched,
+          scale: themeTypography.scale,
+          sizes: themeTypography.sizes,
         },
         textFit: textFitStats,
         imagePrompts: imagePromptsDiagnostics,
