@@ -4,6 +4,8 @@ import { runLlmParsingTests } from "./llmParsing.test";
 import { runLlmBatchingTests } from "./llmBatching.test";
 import { runQualityGateTests } from "./qualityGate.test";
 import { runTemplateGeneratorTests } from "./templateGenerator.test";
+import { runLayoutSelectorTests } from "./layoutSelector.test";
+import { runLayoutCompilerTests } from "./layoutCompiler.test";
 import { runTemplateGenerateArgTests } from "./templateGenerateArgs.test";
 
 runPlaceholderTests();
@@ -12,5 +14,7 @@ runLlmParsingTests();
 runLlmBatchingTests();
 runQualityGateTests();
 runTemplateGeneratorTests();
+runLayoutSelectorTests();
+runLayoutCompilerTests();
 runTemplateGenerateArgTests();
 console.log("tests: ok");

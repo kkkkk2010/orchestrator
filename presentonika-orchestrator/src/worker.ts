@@ -31,6 +31,7 @@ import { mergeFills } from "./llm/mergeFills";
 import { aggregateFillCounts, buildBatches } from "./llm/batching";
 import { calcLlmRetryDelayMs, isRetryableLlmError } from "./llm/retry";
 import { applyTypographyStandards, autoFitText, dedupeBulletLines, generateLocalFallback, generateLocalFallbackBullets, normalizeText, resolveThemeTypography, styleRoleByKey } from "./templates/textPostprocess";
+import { applyLayoutEngine } from "./layout";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
@@ -85,6 +86,9 @@ const MAX_OUTZIP_BYTES_LOCAL = parseInt(process.env.MAX_OUTZIP_BYTES_LOCAL || "2
 const MAX_STAGED_BYTES = parseInt(process.env.MAX_STAGED_BYTES || String(MAX_OUTZIP_BYTES_LOCAL), 10);
 const IMAGEPLAN_AUTO_DETECT = process.env.IMAGEPLAN_AUTO_DETECT !== "false";
 const IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR = process.env.IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR !== "false";
+
+
+const LAYOUT_ENGINE_ENABLED = process.env.LAYOUT_ENGINE_ENABLED === "true";
 
 
 const cleanupStagedFile = async (params: {
@@ -363,6 +367,9 @@ const worker = new Worker(
     }
 
     const map = await readThemeMap(themeId);
+    const layoutDiagnostics = LAYOUT_ENGINE_ENABLED
+      ? applyLayoutEngine({ doc, map, seed: `${presentationId}:${themeId}` })
+      : { selectedLayouts: [], insertedTextPlaceholders: 0, insertedImagePlaceholders: 0 };
     const debugFillsRaw = job.data?.debug?.fills;
     const debugFills = (debugFillsRaw && typeof debugFillsRaw === "object" ? debugFillsRaw : {}) as Record<string, string>;
     const debugFillsApplied = Object.keys(debugFills).length > 0;
@@ -897,6 +904,12 @@ const worker = new Worker(
             ? "Image plan slots resolved for editor picker"
             : "No final slots resolved. Check imageAt bindings or auto-detect settings.",
         },
+        layout: {
+          enabled: LAYOUT_ENGINE_ENABLED,
+          selectedLayouts: layoutDiagnostics.selectedLayouts,
+          insertedTextPlaceholders: layoutDiagnostics.insertedTextPlaceholders,
+          insertedImagePlaceholders: layoutDiagnostics.insertedImagePlaceholders,
+        },
         llm: llmDiagnostics,
         fills: {
           fillKeysCount: fillKeys.length,
@@ -1276,6 +1289,9 @@ const worker = new Worker(
         imageSlotsInvalidCount,
         imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
         diagnosticsIncluded,
+        layoutSelectedCount: layoutDiagnostics.selectedLayouts.length,
+        layoutInsertedTextPlaceholders: layoutDiagnostics.insertedTextPlaceholders,
+        layoutInsertedImagePlaceholders: layoutDiagnostics.insertedImagePlaceholders,
         usedFallbackForAll: llmDiagnostics.usedFallbackForAll,
         remainingTestTokensCount: remainingFillTokenStats.remainingTestTokensCount,
         remainingMustacheTokensCount: remainingFillTokenStats.remainingMustacheTokensCount,
@@ -1362,6 +1378,9 @@ const worker = new Worker(
         imageSlotsInvalidCount,
         imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
         diagnosticsIncluded,
+        layoutSelectedCount: layoutDiagnostics.selectedLayouts.length,
+        layoutInsertedTextPlaceholders: layoutDiagnostics.insertedTextPlaceholders,
+        layoutInsertedImagePlaceholders: layoutDiagnostics.insertedImagePlaceholders,
         usedFallbackForAll: llmDiagnostics.usedFallbackForAll,
         remainingTestTokensCount: remainingFillTokenStats.remainingTestTokensCount,
         remainingMustacheTokensCount: remainingFillTokenStats.remainingMustacheTokensCount,

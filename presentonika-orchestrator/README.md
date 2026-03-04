@@ -654,6 +654,21 @@ unzip -p out/<jobId>.out.zip diagnostics.json | jq .
 
 Это уменьшает случаи, когда `{{key}}` пропускается и остаётся `TEST_key`.
 
+
+## Layout Engine v0 (foundation)
+
+Добавлен базовый каркас layout-движка (пока opt-in):
+- `src/layout/catalog.ts` — собирает каталог layout-шаблонов из `map.layouts` (если появятся) или строит fallback по текущим placeholder-ключам `doc.json`;
+- `src/layout/selector.ts` — детерминированный выбор layout по seed;
+- `src/layout/slidePlan.ts` — строит план layout по слайдам;
+- `src/layout/compiler.ts` — компилирует план в `doc` (добавляет недостающие text/image placeholders).
+
+Включается через env:
+- `LAYOUT_ENGINE_ENABLED=true`
+
+По умолчанию выключен (`false`), чтобы не менять текущий прод-пайплайн.
+Диагностика попадает в `diagnostics.json.layout` и в `returnValue.assemble` (`layoutSelectedCount`, `layoutInsertedTextPlaceholders`, `layoutInsertedImagePlaceholders`).
+
 ## RAG integration (FastAPI microservice)
 
 Orchestrator can enrich generation with retrieval results from external RAG service.
