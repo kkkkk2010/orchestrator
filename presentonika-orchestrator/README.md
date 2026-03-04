@@ -718,8 +718,8 @@ C) RAG unavailable
 Если в итоговом `doc.json` остаётся много `TEST_<key>`, проверьте:
 
 1) `.tmp/<jobId>/llm.request.json` — какие `fillKeys` и prompt snippet ушли в модель.
-2) `.tmp/<jobId>/llm.response.txt` — что вернул DeepSeek (до 8000 символов).
-3) `.tmp/<jobId>/llm.parsed.json` или `.tmp/<jobId>/llm.error.json`.
+2) `.tmp/<jobId>/llm/batch-*.request.json` — батчевые запросы (keys, prompt snippet).
+3) `.tmp/<jobId>/llm/batch-*.response.txt` / `.parsed.json` / `.error.json`.
 4) `out.zip -> diagnostics.json -> llm`:
    - `attempted`, `ok`, `parseOk`, `parseError`
    - `receivedKeysCount`, `missingKeysCount`
@@ -730,9 +730,15 @@ C) RAG unavailable
 
 Быстрый признак причины:
 - `usedFallbackForAll=true` + `parseError` => ответ не распарсился/не провалидировался.
+- `parseError` содержит `aborted` => увеличьте `LLM_TIMEOUT_MS` и/или уменьшите `LLM_MAX_KEYS_PER_REQUEST`.
 - `fillKeysCount=0` => placeholders не были найдены в template.
 - `LLM_ENABLED=true` и пустой ключ => `error` с `LLMConfigError`.
 - если `llm.ok=true`, но текст не заменился — проверь `diagnostics.fills.remainingTestTokensCount`.
+
+Быстрый чек по VPS:
+```bash
+unzip -p out/<jobId>.out.zip diagnostics.json | jq ' .llm '
+```
 
 ## Как включить DeepSeek + RAG (пошагово)
 
@@ -753,6 +759,14 @@ LLM_FAIL_ON_ERROR=false
 DEEPSEEK_API_KEY=<YOUR_DEEPSEEK_KEY>
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
+LLM_TIMEOUT_MS=300000
+LLM_TOTAL_TIMEOUT_MS=600000
+LLM_MAX_KEYS_PER_REQUEST=12
+LLM_BATCH_MODE=bySlide
+LLM_RETRIES=2
+LLM_RETRY_BASE_DELAY_MS=400
+LLM_RETRY_MAX_DELAY_MS=5000
+LLM_RETRY_ON_ABORT=true
 ```
 
 3. Перезапустите API и worker.

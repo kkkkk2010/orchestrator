@@ -26,6 +26,8 @@ import { writeRagArtifacts } from "./rag/writeArtifacts";
 import { DeepSeekClient } from "./llm/deepseek/DeepSeekClient";
 import { buildSystemPrompt, buildUserPrompt } from "./llm/prompt";
 import { mergeFills } from "./llm/mergeFills";
+import { aggregateFillCounts, buildBatches } from "./llm/batching";
+import { calcLlmRetryDelayMs, isRetryableLlmError } from "./llm/retry";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
@@ -63,6 +65,14 @@ const RAG_INCLUDE_IN_OUTZIP = process.env.RAG_INCLUDE_IN_OUTZIP !== "false";
 
 const LLM_ENABLED = process.env.LLM_ENABLED === "true";
 const LLM_FAIL_ON_ERROR = process.env.LLM_FAIL_ON_ERROR === "true";
+const LLM_TIMEOUT_MS = Number.parseInt(process.env.LLM_TIMEOUT_MS || "300000", 10);
+const LLM_TOTAL_TIMEOUT_MS = Number.parseInt(process.env.LLM_TOTAL_TIMEOUT_MS || "600000", 10);
+const LLM_MAX_KEYS_PER_REQUEST = Number.parseInt(process.env.LLM_MAX_KEYS_PER_REQUEST || "12", 10);
+const LLM_BATCH_MODE = process.env.LLM_BATCH_MODE === "chunk" ? "chunk" : "bySlide";
+const LLM_RETRIES = Number.parseInt(process.env.LLM_RETRIES || "2", 10);
+const LLM_RETRY_BASE_DELAY_MS = Number.parseInt(process.env.LLM_RETRY_BASE_DELAY_MS || "400", 10);
+const LLM_RETRY_MAX_DELAY_MS = Number.parseInt(process.env.LLM_RETRY_MAX_DELAY_MS || "5000", 10);
+const LLM_RETRY_ON_ABORT = process.env.LLM_RETRY_ON_ABORT !== "false";
 
 const MAX_SLIDES = parseInt(process.env.MAX_SLIDES || "30", 10);
 const MAX_TEMPLATE_ZIP_BYTES = parseInt(process.env.MAX_TEMPLATE_ZIP_BYTES || "200000000", 10);
@@ -335,6 +345,17 @@ const worker = new Worker(
     const normalizedAfterVariants = normalizePlaceholders(doc);
     const placeholderScan = extractPlaceholderLocations(doc);
     const fillKeys = [...new Set(placeholderScan.locations.map((item) => item.key))];
+    const placeholdersBySlide = placeholderScan.locations.reduce<Record<string, { count: number; keys: string[] }>>((acc, location) => {
+      const slideKey = String(location.slide);
+      if (!acc[slideKey]) {
+        acc[slideKey] = { count: 0, keys: [] };
+      }
+      acc[slideKey].count += 1;
+      if (!acc[slideKey].keys.includes(location.key)) {
+        acc[slideKey].keys.push(location.key);
+      }
+      return acc;
+    }, {});
 
     let llmFills: Record<string, string> = {};
     let llmError: string | undefined;
@@ -349,66 +370,36 @@ const worker = new Worker(
     } | undefined;
     let llmImagePlanPatch: {
       slots: Array<{ slotId: string; query?: string; hint?: string; styleHint?: string; negative?: string[] }>;
-    } | undefined;
+    } = { slots: [] };
     const llmStartedAt = Date.now();
-    const llmRequestPath = path.resolve(jobTmpDir, "llm.request.json");
-    const llmResponsePath = path.resolve(jobTmpDir, "llm.response.txt");
-    const llmParsedPath = path.resolve(jobTmpDir, "llm.parsed.json");
-    const llmErrorPath = path.resolve(jobTmpDir, "llm.error.json");
-
-    const llmImagePlanInput = buildImagePlanFromMap({
-      map,
-      doc,
-      presentationId,
-      themeId,
-      topic: typeof job.data?.topic === "string" ? job.data.topic : "",
-      language: typeof job.data?.language === "string" ? job.data.language : null,
-    });
-
-    const systemPrompt = buildSystemPrompt();
-    const userPrompt = buildUserPrompt({
-      presentationId,
-      themeId,
-      topic: typeof job.data?.topic === "string" ? job.data.topic : "",
-      language: typeof job.data?.language === "string" ? job.data.language : null,
-      fillKeys,
-      imagePlan: llmImagePlanInput,
-      rag: ragMode === "retrieve"
-        ? {
-            mode: "retrieve",
-            contextText: ragContextText,
-            citations: ragCitations,
-            miniPrompt: ragMiniPrompt,
-          }
-        : {
-            mode: "query",
-            answer: ragAnswer,
-            sources: ragSources,
-            miniPrompt: ragMiniPrompt,
-          },
-    });
-
-    await fs.writeFile(
-      llmRequestPath,
-      JSON.stringify(
-        {
-          model: process.env.DEEPSEEK_MODEL || "deepseek-chat",
-          systemPromptHash: createHash("sha256").update(systemPrompt).digest("hex").slice(0, 16),
-          userPromptSnippet: userPrompt.slice(0, 2000),
-          fillKeys,
-        },
-        null,
-        2
-      )
-    ).catch((error) => {
-      jobLogger.warn({ err: error, llmRequestPath }, "unable to persist llm request debug file");
-    });
+    const llmDirPath = path.resolve(jobTmpDir, "llm");
+    await fs.mkdir(llmDirPath, { recursive: true }).catch(() => undefined);
 
     const llmDiagnostics = {
       enabled: LLM_ENABLED,
       attempted: false,
       ok: false,
       model: process.env.DEEPSEEK_MODEL || "deepseek-chat",
+      timeoutMs: LLM_TIMEOUT_MS,
+      totalTimeoutMs: LLM_TOTAL_TIMEOUT_MS,
+      batchMode: LLM_BATCH_MODE,
+      maxKeysPerRequest: LLM_MAX_KEYS_PER_REQUEST,
+      batchCount: 0,
+      batches: [] as Array<{
+        index: number;
+        slide?: number;
+        keysCount: number;
+        keysSample: string[];
+        attempted: boolean;
+        ok: boolean;
+        parseOk: boolean;
+        receivedKeysCount: number;
+        missingKeysCount: number;
+        timingMs: number;
+        httpStatus?: number;
+        error?: string;
+        retryCount: number;
+      }>,
       fillKeysCount: fillKeys.length,
       fillKeysSample: fillKeys.slice(0, 10),
       receivedKeysCount: 0,
@@ -434,60 +425,152 @@ const worker = new Worker(
         }
 
         const llmClient = new DeepSeekClient();
-        const llmResponse = await llmClient.generate({
-          presentationId,
-          themeId,
-          topic: typeof job.data?.topic === "string" ? job.data.topic : "",
-          language: typeof job.data?.language === "string" ? job.data.language : null,
+        const batches = buildBatches({
           fillKeys,
-          imagePlan: llmImagePlanInput,
-          rag: ragMode === "retrieve"
-            ? {
-                mode: "retrieve",
-                contextText: ragContextText,
-                citations: ragCitations,
-                miniPrompt: ragMiniPrompt,
-              }
-            : {
-                mode: "query",
-                answer: ragAnswer,
-                sources: ragSources,
-                miniPrompt: ragMiniPrompt,
-              },
+          placeholdersBySlide,
+          maxKeysPerRequest: LLM_MAX_KEYS_PER_REQUEST,
+          mode: LLM_BATCH_MODE,
         });
 
-        llmFills = llmResponse.fills;
-        llmMeta = {
-          model: llmResponse.meta?.model,
-          tokens: llmResponse.meta?.tokens,
-          latencyMs: llmResponse.meta?.latencyMs,
-          attempts: llmResponse.meta?.attempts,
-          parseOk: llmResponse.meta?.parseOk,
-          parseError: llmResponse.meta?.parseError,
-          rawResponseText: llmResponse.meta?.rawResponseText,
-        };
-        llmImagePlanPatch = llmResponse.imagePlanPatch;
+        llmDiagnostics.batchCount = batches.length;
 
-        await fs.writeFile(llmResponsePath, (llmMeta.rawResponseText || "").slice(0, 8000)).catch(() => undefined);
-        await fs.writeFile(llmParsedPath, JSON.stringify(llmResponse, null, 2)).catch(() => undefined);
+        for (const batch of batches) {
+          const batchStartedAt = Date.now();
+          const elapsedTotal = batchStartedAt - llmStartedAt;
+          if (elapsedTotal > LLM_TOTAL_TIMEOUT_MS) {
+            const timeoutError = `LlmTotalTimeout: ${elapsedTotal} > ${LLM_TOTAL_TIMEOUT_MS}`;
+            if (LLM_FAIL_ON_ERROR) {
+              throw new Error(timeoutError);
+            }
+            llmDiagnostics.error = timeoutError;
+            llmDiagnostics.hint = "total llm deadline reached; remaining keys will fallback";
+            break;
+          }
 
-        llmDiagnostics.ok = true;
-        llmDiagnostics.model = llmMeta.model || llmDiagnostics.model;
-        llmDiagnostics.receivedKeysCount = Object.keys(llmFills).length;
-        llmDiagnostics.missingKeysCount = Math.max(0, fillKeys.length - llmDiagnostics.receivedKeysCount);
-        llmDiagnostics.parseOk = llmMeta.parseOk !== false;
-        llmDiagnostics.parseError = llmMeta.parseError;
+          const batchFilePrefix = path.resolve(llmDirPath, `batch-${String(batch.index).padStart(2, "0")}`);
+
+          const batchImagePlanInput = {
+            ...buildImagePlanFromMap({
+              map,
+              doc,
+              presentationId,
+              themeId,
+              topic: typeof job.data?.topic === "string" ? job.data.topic : "",
+              language: typeof job.data?.language === "string" ? job.data.language : null,
+            }),
+          };
+
+          const batchPromptInput = {
+            presentationId,
+            themeId,
+            topic: typeof job.data?.topic === "string" ? job.data.topic : "",
+            language: typeof job.data?.language === "string" ? job.data.language : null,
+            fillKeys: batch.keys,
+            imagePlan: batchImagePlanInput,
+            rag: ragMode === "retrieve"
+              ? {
+                  mode: "retrieve" as const,
+                  contextText: ragContextText,
+                  citations: ragCitations,
+                  miniPrompt: ragMiniPrompt,
+                }
+              : {
+                  mode: "query" as const,
+                  answer: ragAnswer,
+                  sources: ragSources,
+                  miniPrompt: ragMiniPrompt,
+                },
+          };
+
+          const systemPrompt = buildSystemPrompt();
+          const userPrompt = buildUserPrompt(batchPromptInput);
+
+          await fs.writeFile(
+            `${batchFilePrefix}.request.json`,
+            JSON.stringify(
+              {
+                model: process.env.DEEPSEEK_MODEL || "deepseek-chat",
+                timeoutMs: LLM_TIMEOUT_MS,
+                keys: batch.keys,
+                systemPromptHash: createHash("sha256").update(systemPrompt).digest("hex").slice(0, 16),
+                userPromptSnippet: userPrompt.slice(0, 2000),
+              },
+              null,
+              2
+            )
+          ).catch(() => undefined);
+
+          let retryCount = 0;
+          let batchOk = false;
+          let batchParseOk = false;
+          let batchError: string | undefined;
+
+          for (let attempt = 1; attempt <= Math.max(1, LLM_RETRIES + 1); attempt += 1) {
+            try {
+              const llmResponse = await llmClient.generate(batchPromptInput);
+              llmMeta = llmResponse.meta;
+              llmImagePlanPatch = {
+                slots: [...llmImagePlanPatch.slots, ...(llmResponse.imagePlanPatch?.slots || [])],
+              };
+              llmFills = { ...llmFills, ...llmResponse.fills };
+
+              await fs.writeFile(`${batchFilePrefix}.response.txt`, (llmResponse.meta?.rawResponseText || "").slice(0, 8000)).catch(() => undefined);
+              await fs.writeFile(`${batchFilePrefix}.parsed.json`, JSON.stringify(llmResponse, null, 2)).catch(() => undefined);
+
+              batchOk = true;
+              batchParseOk = llmResponse.meta?.parseOk !== false;
+              break;
+            } catch (error) {
+              batchError = error instanceof Error ? error.message : String(error);
+              retryCount = attempt - 1;
+
+              const retryable = isRetryableLlmError(error, LLM_RETRY_ON_ABORT);
+              if (!retryable || attempt > LLM_RETRIES) {
+                await fs.writeFile(`${batchFilePrefix}.error.json`, JSON.stringify({ error: batchError }, null, 2)).catch(() => undefined);
+                break;
+              }
+
+              const delayMs = calcLlmRetryDelayMs(attempt, LLM_RETRY_BASE_DELAY_MS, LLM_RETRY_MAX_DELAY_MS);
+              await sleep(delayMs);
+            }
+          }
+
+          const counts = aggregateFillCounts(batch.keys, llmFills);
+          llmDiagnostics.batches.push({
+            index: batch.index,
+            slide: batch.slide,
+            keysCount: batch.keys.length,
+            keysSample: batch.keys.slice(0, 5),
+            attempted: true,
+            ok: batchOk,
+            parseOk: batchParseOk,
+            receivedKeysCount: counts.receivedKeysCount,
+            missingKeysCount: counts.missingKeysCount,
+            timingMs: Date.now() - batchStartedAt,
+            error: batchError,
+            retryCount,
+          });
+
+          if (!batchOk && LLM_FAIL_ON_ERROR) {
+            throw new Error(batchError || `LLMBatchFailed: ${batch.index}`);
+          }
+        }
+
+        const aggregated = aggregateFillCounts(fillKeys, llmFills);
+        llmDiagnostics.receivedKeysCount = aggregated.receivedKeysCount;
+        llmDiagnostics.missingKeysCount = aggregated.missingKeysCount;
+        llmDiagnostics.ok = aggregated.receivedKeysCount > 0;
+        llmDiagnostics.parseOk = llmDiagnostics.batches.every((batch) => batch.parseOk || !batch.ok);
       } catch (error) {
         llmError = error instanceof Error ? error.message : String(error);
         llmDiagnostics.error = llmError;
         llmDiagnostics.ok = false;
         llmDiagnostics.parseOk = false;
-        llmDiagnostics.parseError = llmError;
-        await fs.writeFile(llmErrorPath, JSON.stringify({ error: llmError }, null, 2)).catch(() => undefined);
 
         if (LLM_FAIL_ON_ERROR) {
           throw new Error(`LLMFailed: ${llmError}`);
         }
+
         jobLogger.warn({ err: error }, "llm generation failed, fallback to test fills for missing keys");
       } finally {
         llmDiagnostics.timingMs = Date.now() - llmStartedAt;
@@ -511,8 +594,9 @@ const worker = new Worker(
       return fills[key] === `TEST_${key}`;
     }).length;
 
-    llmDiagnostics.receivedKeysCount = Object.keys(llmFills).length;
-    llmDiagnostics.missingKeysCount = Math.max(0, fillKeys.length - llmDiagnostics.receivedKeysCount);
+    const aggregated = aggregateFillCounts(fillKeys, llmFills);
+    llmDiagnostics.receivedKeysCount = aggregated.receivedKeysCount;
+    llmDiagnostics.missingKeysCount = aggregated.missingKeysCount;
     llmDiagnostics.usedFallbackForAll = fillKeys.length > 0 && fallbackKeysCount === fillKeys.length;
 
     const fillsStats = applyFillsByLocations(doc, placeholderScan.locations, fills);
@@ -561,18 +645,6 @@ const worker = new Worker(
       await fs.writeFile(imagePlanTmpPath, imagePlanJsonString).catch((error) => {
         jobLogger.warn({ err: error, imagePlanTmpPath }, "unable to persist imagePlan tmp file");
       });
-
-      const placeholdersBySlide = placeholderScan.locations.reduce<Record<string, { count: number; keys: string[] }>>((acc, location) => {
-        const slideKey = String(location.slide);
-        if (!acc[slideKey]) {
-          acc[slideKey] = { count: 0, keys: [] };
-        }
-        acc[slideKey].count += 1;
-        if (!acc[slideKey].keys.includes(location.key)) {
-          acc[slideKey].keys.push(location.key);
-        }
-        return acc;
-      }, {});
 
       const diagnostics = {
         version: 1,
@@ -946,17 +1018,7 @@ const worker = new Worker(
         debugFillsApplied,
         placeholderCount: placeholderScan.locations.length,
         placeholderKeys: fillKeys,
-        placeholdersBySlide: placeholderScan.locations.reduce<Record<string, { count: number; keys: string[] }>>((acc, location) => {
-          const slideKey = String(location.slide);
-          if (!acc[slideKey]) {
-            acc[slideKey] = { count: 0, keys: [] };
-          }
-          acc[slideKey].count += 1;
-          if (!acc[slideKey].keys.includes(location.key)) {
-            acc[slideKey].keys.push(location.key);
-          }
-          return acc;
-        }, {}),
+        placeholdersBySlide,
         imagePlannedCount: imagePlan.plannedCount,
         imagePlanVersion: 1,
         imagePlanIncluded,
@@ -1002,6 +1064,11 @@ const worker = new Worker(
         parseError: llmDiagnostics.parseError,
         receivedKeysCount: llmDiagnostics.receivedKeysCount,
         missingKeysCount: llmDiagnostics.missingKeysCount,
+        timeoutMs: llmDiagnostics.timeoutMs,
+        totalTimeoutMs: llmDiagnostics.totalTimeoutMs,
+        batchMode: llmDiagnostics.batchMode,
+        maxKeysPerRequest: llmDiagnostics.maxKeysPerRequest,
+        batchCount: llmDiagnostics.batchCount,
         tokens: llmMeta?.tokens,
         latencyMs: llmMeta?.latencyMs,
         attempts: llmMeta?.attempts,

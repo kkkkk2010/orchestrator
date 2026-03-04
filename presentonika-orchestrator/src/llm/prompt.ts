@@ -2,112 +2,49 @@ import type { LLMGenerateInput } from "./LLMClient";
 
 export const buildSystemPrompt = (): string => {
   return [
-    "Ты помощник-методист и редактор, который делает текст для учебной презентации.",
-    "Твоя задача: сгенерировать контент слайдов (fills) и подсказки для подбора изображений (imagePlanPatch).",
-    "Верни СТРОГО JSON по схеме responseFormat.",
+    "Ты методист. Генерируешь короткие тексты для слайдов.",
+    "Верни только JSON: { fills: {key:value}, imagePlanPatch?: { slots: [...] } }.",
     "Никакого текста вне JSON.",
   ].join(" ");
 };
 
-const summarizeKey = (key: string): string => {
-  if (key.includes("goals")) return `${key}: цели урока`;
-  if (key.includes("plan")) return `${key}: план урока`;
-  if (key.includes("hook")) return `${key}: вовлекающий блок`;
-  if (key.includes("bullets")) return `${key}: тезисы списком`;
-  if (key.includes("summary")) return `${key}: краткое резюме`;
-  if (key.includes("homework")) return `${key}: домашнее задание`;
-  if (key.includes("sources")) return `${key}: источники`;
-  return `${key}: текст слайда`;
-};
-
-const buildRagRuleHints = (input: LLMGenerateInput): string[] => {
+const buildRagContext = (input: LLMGenerateInput): string => {
   if (!input.rag) {
-    return [];
-  }
-
-  return [
-    "Сначала используй факты из приложенных фрагментов источников.",
-    "Если фрагментов нет или их недостаточно, ответь на основе своих знаний без выдуманных ссылок [n].",
-    "Ссылки [n] ставь только когда реально используешь соответствующий источник.",
-    "Для s10_sources собери ссылки только на основе citations/sources: source_uri + page + fragment_id.",
-  ];
-};
-
-const buildRagContext = (input: LLMGenerateInput): string | undefined => {
-  if (!input.rag) {
-    return undefined;
+    return "";
   }
 
   const miniPrompt = input.rag.miniPrompt ||
-    "Сначала используй информацию из ИСТОЧНИКОВ; если информации не хватает — дополни ответ своими знаниями без выдуманных ссылок.";
+    "Сначала используй источники. Если не хватает данных — дополни общими знаниями без выдуманных ссылок [n].";
 
   if (input.rag.contextText) {
-    return `RAG_MINI_PROMPT:\n${miniPrompt}\n\nИСТОЧНИКИ (цитировать как [1], [2] ...):\n${input.rag.contextText}`;
+    return `RAG:\n${miniPrompt}\n${input.rag.contextText}`;
   }
 
-  if (input.rag.answer && input.rag.sources?.length) {
-    const sourcesText = input.rag.sources
-      .map((source) => {
-        const page = typeof source.page === "number" ? ` (p.${source.page})` : "";
-        return `[${source.n}] ${source.source_uri}${page} score=${source.score.toFixed(2)}: ${source.snippet}`;
-      })
-      .join("\n");
-
-    return `RAG_MINI_PROMPT:\n${miniPrompt}\n\nRAG_ANSWER:\n${input.rag.answer}\n\nИСТОЧНИКИ (цитировать как [1], [2] ...):\n${sourcesText}`;
+  if (input.rag.answer) {
+    return `RAG:\n${miniPrompt}\n${input.rag.answer}`;
   }
 
-  return `RAG_MINI_PROMPT:\n${miniPrompt}\n\nИСТОЧНИКИ: (пусто)`;
+  return `RAG:\n${miniPrompt}\n(источники пусты)`;
+};
+
+const keyRule = (key: string): string => {
+  if (key.includes("title")) return "<=7 слов";
+  if (key.includes("subtitle")) return "<=12 слов";
+  if (key.includes("bullets")) return "до 5 пунктов, строки с '-'";
+  if (key.includes("sources")) return "3-6 общих источников";
+  return "кратко";
 };
 
 export const buildUserPrompt = (input: LLMGenerateInput): string => {
-  const lang = input.language || "ru";
-  const slots = input.imagePlan.slots.map((slot: LLMGenerateInput["imagePlan"]["slots"][number]) => ({
-    slotId: slot.slotId,
-    kind: slot.kind,
-    aspect: slot.aspect ?? "any",
-    query: slot.query,
-    hint: slot.hint,
-    styleHint: slot.styleHint,
-    negative: slot.negative,
-  }));
+  const keysWithRules = input.fillKeys.map((key) => `${key}: ${keyRule(key)}`);
 
-  return JSON.stringify(
-    {
-      task: "generate_presentation_content_and_image_hints",
-      objective: "Ты делаешь текст для презентации по теме и формируешь подсказки для изображений.",
-      mustReturn: {
-        format: "strict_json",
-        contract: "{ fills: Record<string,string>, imagePlanPatch?: { slots: [{ slotId, query?, hint?, styleHint?, negative?[] }] } }",
-      },
-      requirements: {
-        language: lang,
-        responseFormat: {
-          fills: "Record<string,string>",
-          imagePlanPatch: {
-            slots: [{ slotId: "string", query: "string?", hint: "string?", styleHint: "string?", negative: ["string"] }],
-          },
-        },
-        style: [
-          "compact",
-          "no fluff",
-          "for bullets prefer lines with '-' or '•'",
-          "for s10_sources provide 3-6 generic source references without fake precise URLs",
-          "in fills object use EXACT keys from context.fillKeys (without renaming, comments, or suffixes)",
-          ...buildRagRuleHints(input),
-        ],
-      },
-      context: {
-        topic: input.topic,
-        themeId: input.themeId,
-        presentationId: input.presentationId,
-        fillKeys: input.fillKeys,
-        fillKeyHints: input.fillKeys.map(summarizeKey),
-        imageSlots: slots,
-        groundingContext: buildRagContext(input),
-      },
-      outputRule: "Strict JSON only",
-    },
-    null,
-    2
-  );
+  return [
+    `topic: ${input.topic || "презентация"}`,
+    `language: ${input.language || "ru"}`,
+    `keys: ${keysWithRules.join("; ")}`,
+    buildRagContext(input),
+    "Верни JSON объект. fills должен содержать ТОЛЬКО перечисленные keys.",
+  ]
+    .filter((line) => line.trim().length > 0)
+    .join("\n");
 };
