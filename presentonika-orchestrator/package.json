@@ -18,7 +18,9 @@
     "test": "tsx src/tests/run.ts",
     "template:qa": "tsx src/tools/templateQa.ts",
     "template:patch": "tsx src/tools/templatePatch.ts",
-    "template:generate": "tsx src/tools/templateGenerate.ts"
+    "template:generate": "tsx src/tools/templateGenerate.ts",
+    "tools:build": "tsc -p tsconfig.json",
+    "template:generate:node": "npm run tools:build && node dist/tools/templateGenerate.js"
   },
   "dependencies": {
     "bullmq": "^5.12.7",

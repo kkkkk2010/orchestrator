@@ -247,10 +247,28 @@ const rewriteTemplateZip = async (params: {
   });
 };
 
+export const parseTemplateGenerateArgs = (argv: string[]): { themeId: string | null; write: boolean } => {
+  let themeId: string | null = null;
+  let write = false;
+
+  for (const arg of argv) {
+    if (arg === "--") continue;
+    if (arg === "--write") {
+      write = true;
+      continue;
+    }
+    if (!arg.startsWith("-") && themeId === null) {
+      themeId = arg;
+    }
+  }
+
+  return { themeId, write };
+};
+
 const run = async (): Promise<void> => {
-  const args = process.argv.slice(2);
-  const themeId = args[0];
-  const writeFlag = args.includes("--write");
+  const parsed = parseTemplateGenerateArgs(process.argv.slice(2));
+  const themeId = parsed.themeId;
+  const writeFlag = parsed.write;
 
   if (!themeId) {
     console.error("Usage: npm run template:generate -- <themeId> [--write]");
