@@ -36,6 +36,9 @@ export type LLMGenerateOutput = {
     latencyMs?: number;
     attempts?: number;
     error?: string;
+    parseOk?: boolean;
+    parseError?: string;
+    rawResponseText?: string;
   };
 };
 

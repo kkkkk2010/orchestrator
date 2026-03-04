@@ -3,18 +3,11 @@ import { sleep } from "../../util/sleep";
 import type { LLMClient, LLMGenerateInput, LLMGenerateOutput } from "../LLMClient";
 import { buildSystemPrompt, buildUserPrompt } from "../prompt";
 import { parseAndNormalizeLLMOutput } from "../schema";
+import { parseDeepseekJson } from "../parseDeepseekJson";
 
 type ChatCompletionLike = {
   choices?: Array<{ message?: { content?: string | Array<{ type?: string; text?: string }> } }>;
   usage?: { total_tokens?: number };
-};
-
-const strictJsonParse = (text: string): unknown => {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
-    throw new Error("LLMInvalidJSON: non-json-wrapper");
-  }
-  return JSON.parse(trimmed) as unknown;
 };
 
 const extractText = (response: ChatCompletionLike): string => {
@@ -117,6 +110,8 @@ export class DeepSeekClient implements LLMClient {
 
     let attempt = 0;
     let lastError: Error | null = null;
+    let lastParseError: string | undefined;
+    let lastRawText = "";
 
     while (attempt <= this.maxRetries) {
       attempt += 1;
@@ -128,16 +123,27 @@ export class DeepSeekClient implements LLMClient {
         ]);
 
         let rawText = extractText(response);
+        lastRawText = rawText;
         let parsed: LLMGenerateOutput | null = null;
-        try {
-          parsed = parseAndNormalizeLLMOutput({
-            raw: strictJsonParse(rawText),
-            input,
-            maxOutputChars: this.maxOutputChars,
-          });
-        } catch (error) {
+
+        const parsedRaw = parseDeepseekJson(rawText);
+        if (parsedRaw.parsed) {
+          try {
+            parsed = parseAndNormalizeLLMOutput({
+              raw: parsedRaw.parsed,
+              input,
+              maxOutputChars: this.maxOutputChars,
+            });
+          } catch (error) {
+            lastParseError = error instanceof Error ? error.message : String(error);
+          }
+        } else {
+          lastParseError = parsedRaw.parseError;
+        }
+
+        if (!parsed) {
           let repaired = false;
-          let repairError: Error = error instanceof Error ? error : new Error(String(error));
+          let repairError: Error = new Error(lastParseError || "LLMInvalidJSON: parse failed");
 
           for (let repairAttempt = 1; repairAttempt <= this.repairRetries; repairAttempt += 1) {
             const repairResponse = await this.callCompletion([
@@ -149,16 +155,26 @@ export class DeepSeekClient implements LLMClient {
             ]);
 
             rawText = extractText(repairResponse);
+            lastRawText = rawText;
+            const repairedRaw = parseDeepseekJson(rawText);
+            if (!repairedRaw.parsed) {
+              repairError = new Error(repairedRaw.parseError || "LLMInvalidJSON: parse failed");
+              lastParseError = repairError.message;
+              continue;
+            }
+
             try {
               parsed = parseAndNormalizeLLMOutput({
-                raw: strictJsonParse(rawText),
+                raw: repairedRaw.parsed,
                 input,
                 maxOutputChars: this.maxOutputChars,
               });
               repaired = true;
+              lastParseError = undefined;
               break;
             } catch (innerError) {
               repairError = innerError instanceof Error ? innerError : new Error(String(innerError));
+              lastParseError = repairError.message;
             }
           }
 
@@ -171,10 +187,6 @@ export class DeepSeekClient implements LLMClient {
           throw new Error("LLMInvalidJSON: parse failed");
         }
 
-        if (input.fillKeys.length > 0 && Object.keys(parsed.fills).length === 0) {
-          throw new Error("LLMEmptyFills: no accepted fill keys in model output");
-        }
-
         return {
           ...parsed,
           meta: {
@@ -182,12 +194,14 @@ export class DeepSeekClient implements LLMClient {
             tokens: response.usage?.total_tokens,
             latencyMs: Date.now() - startedAt,
             attempts: attempt,
+            parseOk: true,
+            rawResponseText: lastRawText,
           },
         };
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         if (attempt > this.maxRetries) {
-          throw lastError;
+          throw new Error(`${lastError.message}${lastParseError ? ` | parse=${lastParseError}` : ""}`);
         }
         await sleep(Math.min(3000, 300 * (2 ** (attempt - 1))));
       }

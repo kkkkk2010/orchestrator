@@ -1,6 +1,7 @@
 import "dotenv/config";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { Worker } from "bullmq";
 import { getQueueName, getQueueRedisConnection, getWorkerBullConnection } from "./queue";
 import { logger } from "./logger";
@@ -23,6 +24,8 @@ import { HttpRagClient } from "./rag/httpRagClient";
 import { formatQuerySourcesAsCitations, formatRetrieveContext } from "./rag/formatContext";
 import { writeRagArtifacts } from "./rag/writeArtifacts";
 import { DeepSeekClient } from "./llm/deepseek/DeepSeekClient";
+import { buildSystemPrompt, buildUserPrompt } from "./llm/prompt";
+import { mergeFills } from "./llm/mergeFills";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
@@ -144,7 +147,6 @@ const buildTestFills = (fillKeys: string[]): Record<string, string> => {
 
   return fills;
 };
-
 
 
 const applyImagePlanPatch = (params: {
@@ -329,30 +331,104 @@ const worker = new Worker(
     }
 
     const map = await readThemeMap(themeId);
-    const baseGeneratedFills = buildTestFills(fillKeys);
     let llmFills: Record<string, string> = {};
     let llmError: string | undefined;
-    let llmMeta: { model?: string; tokens?: number; latencyMs?: number; attempts?: number } | undefined;
+    let llmMeta: {
+      model?: string;
+      tokens?: number;
+      latencyMs?: number;
+      attempts?: number;
+      parseOk?: boolean;
+      parseError?: string;
+      rawResponseText?: string;
+    } | undefined;
     let llmImagePlanPatch: {
       slots: Array<{ slotId: string; query?: string; hint?: string; styleHint?: string; negative?: string[] }>;
     } | undefined;
-    let llmAcceptedFillsCount = 0;
+    const llmStartedAt = Date.now();
+    const llmRequestPath = path.resolve(jobTmpDir, "llm.request.json");
+    const llmResponsePath = path.resolve(jobTmpDir, "llm.response.txt");
+    const llmParsedPath = path.resolve(jobTmpDir, "llm.parsed.json");
+    const llmErrorPath = path.resolve(jobTmpDir, "llm.error.json");
 
-    if (LLM_ENABLED) {
+    const llmImagePlanInput = buildImagePlanFromMap({
+      map,
+      doc,
+      presentationId,
+      themeId,
+      topic: typeof job.data?.topic === "string" ? job.data.topic : "",
+      language: typeof job.data?.language === "string" ? job.data.language : null,
+    });
+
+    const systemPrompt = buildSystemPrompt();
+    const userPrompt = buildUserPrompt({
+      presentationId,
+      themeId,
+      topic: typeof job.data?.topic === "string" ? job.data.topic : "",
+      language: typeof job.data?.language === "string" ? job.data.language : null,
+      fillKeys,
+      imagePlan: llmImagePlanInput,
+      rag: ragMode === "retrieve"
+        ? {
+            mode: "retrieve",
+            contextText: ragContextText,
+            citations: ragCitations,
+            miniPrompt: ragMiniPrompt,
+          }
+        : {
+            mode: "query",
+            answer: ragAnswer,
+            sources: ragSources,
+            miniPrompt: ragMiniPrompt,
+          },
+    });
+
+    await fs.writeFile(
+      llmRequestPath,
+      JSON.stringify(
+        {
+          model: process.env.DEEPSEEK_MODEL || "deepseek-chat",
+          systemPromptHash: createHash("sha256").update(systemPrompt).digest("hex").slice(0, 16),
+          userPromptSnippet: userPrompt.slice(0, 2000),
+          fillKeys,
+        },
+        null,
+        2
+      )
+    ).catch((error) => {
+      jobLogger.warn({ err: error, llmRequestPath }, "unable to persist llm request debug file");
+    });
+
+    const llmDiagnostics = {
+      enabled: LLM_ENABLED,
+      attempted: false,
+      ok: false,
+      model: process.env.DEEPSEEK_MODEL || "deepseek-chat",
+      fillKeysCount: fillKeys.length,
+      fillKeysSample: fillKeys.slice(0, 10),
+      receivedKeysCount: 0,
+      missingKeysCount: fillKeys.length,
+      parseOk: false,
+      parseError: undefined as string | undefined,
+      httpStatus: undefined as number | undefined,
+      error: undefined as string | undefined,
+      timingMs: undefined as number | undefined,
+      usedFallbackForAll: false,
+      hint: undefined as string | undefined,
+    };
+
+    if (LLM_ENABLED && fillKeys.length > 0) {
       await job.updateProgress(72);
       jobLogger.info({ stage: "llm_generate" }, "progress updated");
+      llmDiagnostics.attempted = true;
 
       try {
-        const llmClient = new DeepSeekClient();
-        const llmImagePlanInput = buildImagePlanFromMap({
-          map,
-          doc,
-          presentationId,
-          themeId,
-          topic: typeof job.data?.topic === "string" ? job.data.topic : "",
-          language: typeof job.data?.language === "string" ? job.data.language : null,
-        });
+        const apiKey = process.env.DEEPSEEK_API_KEY;
+        if (!apiKey) {
+          throw new Error("LLMConfigError: DEEPSEEK_API_KEY is empty");
+        }
 
+        const llmClient = new DeepSeekClient();
         const llmResponse = await llmClient.generate({
           presentationId,
           themeId,
@@ -376,31 +452,65 @@ const worker = new Worker(
         });
 
         llmFills = llmResponse.fills;
-        llmAcceptedFillsCount = Object.keys(llmFills).length;
         llmMeta = {
           model: llmResponse.meta?.model,
           tokens: llmResponse.meta?.tokens,
           latencyMs: llmResponse.meta?.latencyMs,
           attempts: llmResponse.meta?.attempts,
+          parseOk: llmResponse.meta?.parseOk,
+          parseError: llmResponse.meta?.parseError,
+          rawResponseText: llmResponse.meta?.rawResponseText,
         };
         llmImagePlanPatch = llmResponse.imagePlanPatch;
+
+        await fs.writeFile(llmResponsePath, (llmMeta.rawResponseText || "").slice(0, 8000)).catch(() => undefined);
+        await fs.writeFile(llmParsedPath, JSON.stringify(llmResponse, null, 2)).catch(() => undefined);
+
+        llmDiagnostics.ok = true;
+        llmDiagnostics.model = llmMeta.model || llmDiagnostics.model;
+        llmDiagnostics.receivedKeysCount = Object.keys(llmFills).length;
+        llmDiagnostics.missingKeysCount = Math.max(0, fillKeys.length - llmDiagnostics.receivedKeysCount);
+        llmDiagnostics.parseOk = llmMeta.parseOk !== false;
+        llmDiagnostics.parseError = llmMeta.parseError;
       } catch (error) {
         llmError = error instanceof Error ? error.message : String(error);
+        llmDiagnostics.error = llmError;
+        llmDiagnostics.ok = false;
+        llmDiagnostics.parseOk = false;
+        llmDiagnostics.parseError = llmError;
+        await fs.writeFile(llmErrorPath, JSON.stringify({ error: llmError }, null, 2)).catch(() => undefined);
+
         if (LLM_FAIL_ON_ERROR) {
           throw new Error(`LLMFailed: ${llmError}`);
         }
-        jobLogger.warn({ err: error }, "llm generation failed, fallback to test fills");
+        jobLogger.warn({ err: error }, "llm generation failed, fallback to test fills for missing keys");
       } finally {
+        llmDiagnostics.timingMs = Date.now() - llmStartedAt;
         mark("llm_generate");
       }
+    } else {
+      llmDiagnostics.attempted = false;
+      llmDiagnostics.ok = !LLM_ENABLED || fillKeys.length === 0;
+      llmDiagnostics.hint = fillKeys.length === 0
+        ? "fillKeys are empty: no placeholders found"
+        : (LLM_ENABLED ? undefined : "LLM disabled");
     }
 
-    const generatedFills = { ...baseGeneratedFills, ...llmFills };
+    const generatedFills = mergeFills(fillKeys, llmFills, "TEST_");
     const debugFillsRaw = job.data?.debug?.fills;
     const debugFills = (debugFillsRaw && typeof debugFillsRaw === "object" ? debugFillsRaw : {}) as Record<string, string>;
     const fills = { ...generatedFills, ...debugFills };
     const debugFillsApplied = Object.keys(debugFills).length > 0;
 
+    const fallbackKeysCount = fillKeys.filter((key) => {
+      if (Object.prototype.hasOwnProperty.call(debugFills, key)) {
+        return false;
+      }
+      return fills[key] === `TEST_${key}`;
+    }).length;
+    llmDiagnostics.receivedKeysCount = Object.keys(llmFills).length;
+    llmDiagnostics.missingKeysCount = Math.max(0, fillKeys.length - llmDiagnostics.receivedKeysCount);
+    llmDiagnostics.usedFallbackForAll = fillKeys.length > 0 && fallbackKeysCount === fillKeys.length;
     await job.updateProgress(75);
     jobLogger.info({ stage: "apply_variants_fills" }, "progress updated");
 
@@ -486,6 +596,7 @@ const worker = new Worker(
             ? "Image plan slots resolved for editor picker"
             : "No final slots resolved. Check imageAt bindings or auto-detect settings.",
         },
+        llm: llmDiagnostics,
         stats: {
           slides: slideCount,
           elementsScanned: placeholderScan.elementsScanned,
@@ -849,6 +960,7 @@ const worker = new Worker(
         imageSlotsInvalidCount,
         imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
         diagnosticsIncluded,
+        usedFallbackForAll: llmDiagnostics.usedFallbackForAll,
         imageReplacedCount,
         imageMissing: imageMissingCapped,
         backgroundsPlannedCount: slideCount,
@@ -872,14 +984,19 @@ const worker = new Worker(
         miniPrompt: ragMiniPrompt,
       },
       llm: {
-        enabled: LLM_ENABLED,
-        ok: LLM_ENABLED ? !llmError : false,
-        model: llmMeta?.model,
+        enabled: llmDiagnostics.enabled,
+        attempted: llmDiagnostics.attempted,
+        ok: llmDiagnostics.ok,
+        model: llmMeta?.model || llmDiagnostics.model,
+        parseOk: llmDiagnostics.parseOk,
+        parseError: llmDiagnostics.parseError,
+        receivedKeysCount: llmDiagnostics.receivedKeysCount,
+        missingKeysCount: llmDiagnostics.missingKeysCount,
         tokens: llmMeta?.tokens,
         latencyMs: llmMeta?.latencyMs,
         attempts: llmMeta?.attempts,
         imagePlanPatchedSlots: llmImagePlanPatch?.slots.length || 0,
-        acceptedFillsCount: llmAcceptedFillsCount,
+        acceptedFillsCount: llmDiagnostics.receivedKeysCount,
         expectedFillsCount: fillKeys.length,
         error: llmError,
       },
@@ -920,6 +1037,7 @@ const worker = new Worker(
         imageSlotsInvalidCount,
         imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
         diagnosticsIncluded,
+        usedFallbackForAll: llmDiagnostics.usedFallbackForAll,
         imageReplacedCount,
         imageMissingCount: imageMissing.length,
         backgroundsPlannedCount: slideCount,
@@ -930,10 +1048,14 @@ const worker = new Worker(
         ragHitCount,
         ragIncluded,
         ragError,
-        llmEnabled: LLM_ENABLED,
-        llmModel: llmMeta?.model,
+        llmEnabled: llmDiagnostics.enabled,
+        llmAttempted: llmDiagnostics.attempted,
+        llmModel: llmMeta?.model || llmDiagnostics.model,
+        llmParseOk: llmDiagnostics.parseOk,
+        llmParseError: llmDiagnostics.parseError,
         llmError,
-        llmAcceptedFillsCount,
+        llmAcceptedFillsCount: llmDiagnostics.receivedKeysCount,
+        llmMissingKeysCount: llmDiagnostics.missingKeysCount,
         expectedFillsCount: fillKeys.length,
         uploadAttempted: upload.attempted,
         uploadMode: upload.mode,

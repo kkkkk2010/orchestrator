@@ -712,6 +712,24 @@ C) RAG unavailable
 - with `RAG_FAIL_ON_ERROR=false`: job should still complete and `returnValue.rag.ok=false`;
 - with `RAG_FAIL_ON_ERROR=true`: job should fail with `RagFailed: ...`.
 
+
+## LLM fallback diagnostics
+
+Если в итоговом `doc.json` остаётся много `TEST_<key>`, проверьте:
+
+1) `.tmp/<jobId>/llm.request.json` — какие `fillKeys` и prompt snippet ушли в модель.
+2) `.tmp/<jobId>/llm.response.txt` — что вернул DeepSeek (до 8000 символов).
+3) `.tmp/<jobId>/llm.parsed.json` или `.tmp/<jobId>/llm.error.json`.
+4) `out.zip -> diagnostics.json -> llm`:
+   - `attempted`, `ok`, `parseOk`, `parseError`
+   - `receivedKeysCount`, `missingKeysCount`
+   - `usedFallbackForAll`
+
+Быстрый признак причины:
+- `usedFallbackForAll=true` + `parseError` => ответ не распарсился/не провалидировался.
+- `fillKeysCount=0` => placeholders не были найдены в template.
+- `LLM_ENABLED=true` и пустой ключ => `error` с `LLMConfigError`.
+
 ## Как включить DeepSeek + RAG (пошагово)
 
 1. Убедитесь, что RAG сервис доступен на `http://localhost:8000` и проиндексированы источники.
