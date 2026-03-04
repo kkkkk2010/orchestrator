@@ -9,6 +9,15 @@ export type LLMGenerateInput = {
   fillKeys: string[];
   imagePlan: ImagePlanV1;
   chosenVariantsPreview?: Record<string, string>;
+  mode?: "fills" | "targeted_fills" | "image_prompts";
+  strictKeysRequired?: boolean;
+  imagePromptsInput?: Array<{
+    slotId: string;
+    slide: number;
+    kind: "hero" | "photo" | "icon" | "other";
+    aspect?: "portrait" | "landscape" | "square" | "any";
+    slideSummary: string;
+  }>;
   rag?: {
     mode: "retrieve" | "query";
     contextText?: string;

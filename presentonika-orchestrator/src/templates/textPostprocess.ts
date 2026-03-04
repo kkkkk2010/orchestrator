@@ -1,17 +1,34 @@
 import type { PlaceholderLocation } from "./applyFills";
 
-export type TextKind = "title" | "bullets" | "body";
+export type StyleRole = "title" | "subtitle" | "body" | "small" | "muted" | "bullets";
+
+type TextKind = "title" | "bullets" | "body";
+
+type SizeRange = { min: number; max: number };
+
+type TypographyConfig = {
+  fontFamily: string;
+  sizes: Record<StyleRole, number>;
+  lineHeights: Record<StyleRole, number>;
+  colors: {
+    title: string;
+    body: string;
+    muted: string;
+  };
+  mode: "dark" | "light";
+};
 
 export type TextFitItem = {
   key: string;
+  role: StyleRole;
   slide: number;
   elementIndex: number;
+  baseFontSize: number;
   origFontSize: number;
   finalFontSize: number;
   textLen: number;
   maxCharsEst: number;
   wasShrunk: boolean;
-  wasGrown: boolean;
   wasTruncated: boolean;
 };
 
@@ -21,17 +38,25 @@ export type TextFitStats = {
   items: TextFitItem[];
 };
 
+export type TypographyApplyStats = {
+  touched: number;
+  colorsApplied: boolean;
+  themeColorMode: "dark" | "light";
+};
+
 const TEXT_KEYS = new Set(["text", "content", "value"]);
 
 const toRecord = (value: unknown): Record<string, unknown> | null => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
 };
 
-const readNum = (value: unknown): number | null => {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+const readNum = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+
+const clip = (value: string, max: number): string => {
+  if (value.length <= max) return value;
+  const safe = Math.max(1, max - 1);
+  return `${value.slice(0, safe)}…`;
 };
 
 const guessKind = (key: string): TextKind => {
@@ -41,100 +66,211 @@ const guessKind = (key: string): TextKind => {
   return "body";
 };
 
-export const normalizeText = (key: string, value: string): string => {
-  let text = value
-    .replace(/\*\*(.*?)\*\*/g, "$1")
-    .replace(/^#+\s*/gm, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  if (guessKind(key) === "bullets") {
-    const lines = text
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .map((line) => line.replace(/^[-•]\s*/, ""));
-
-    text = lines.map((line) => `• ${line}`).join("\n");
-  }
-
-  return text;
+export const styleRoleByKey = (key: string): StyleRole => {
+  const normalized = key.toLowerCase();
+  if (/(^|_)(title|header)$/.test(normalized) || /^s\d+_title$/.test(normalized)) return "title";
+  if (normalized.endsWith("_subtitle") || normalized.includes("subtitle")) return "subtitle";
+  if (normalized.endsWith("_meta") || normalized.endsWith("_sources") || normalized.includes("sources")) return "muted";
+  if (/(?:_bullets|_plan|_goals|_examples|_task|_q\d+|_step\d+)$/i.test(normalized)) return "bullets";
+  if (normalized.endsWith("_small")) return "small";
+  return "body";
 };
 
-const applyFontFamilyOnRecord = (record: Record<string, unknown>, fontFamily: string): number => {
-  let updated = 0;
+const defaultTypography = (themeId: string): TypographyConfig => {
+  const normalized = themeId.toLowerCase();
+  const dark = normalized.includes("dark");
 
-  if (typeof record.fontFamily === "string" && record.fontFamily !== fontFamily) {
-    record.fontFamily = fontFamily;
-    updated += 1;
+  if (dark) {
+    return {
+      fontFamily: process.env.FONT_FAMILY_DEFAULT || "Times New Roman",
+      sizes: { title: 44, subtitle: 28, body: 22, small: 18, muted: 18, bullets: 22 },
+      lineHeights: { title: 1.05, subtitle: 1.12, body: 1.18, small: 1.15, muted: 1.15, bullets: 1.18 },
+      colors: { title: "#FFFFFF", body: "#F2F2F2", muted: "#CFCFCF" },
+      mode: "dark",
+    };
   }
 
-  for (const styleKey of ["style", "textStyle", "paragraphStyle"]) {
-    const style = toRecord(record[styleKey]);
-    if (!style) continue;
-    if (style.fontFamily !== fontFamily) {
-      style.fontFamily = fontFamily;
-      updated += 1;
+  const isLight = normalized.includes("light");
+  return {
+    fontFamily: process.env.FONT_FAMILY_DEFAULT || "Times New Roman",
+    sizes: { title: 44, subtitle: 28, body: 22, small: 18, muted: 18, bullets: 22 },
+    lineHeights: { title: 1.05, subtitle: 1.12, body: 1.18, small: 1.15, muted: 1.15, bullets: 1.18 },
+    colors: isLight
+      ? { title: "#111111", body: "#222222", muted: "#555555" }
+      : { title: "#111111", body: "#111111", muted: "#444444" },
+    mode: "light",
+  };
+};
+
+export const resolveThemeTypography = (themeId: string, theme: unknown): TypographyConfig => {
+  const base = defaultTypography(themeId);
+  const typography = toRecord(toRecord(theme)?.typography);
+  if (!typography) return base;
+
+  const sizes = toRecord(typography.sizes);
+  const lineHeights = toRecord(typography.lineHeights);
+  const colors = toRecord(typography.colors);
+
+  const readSize = (role: StyleRole): number => readNum(sizes?.[role]) ?? base.sizes[role];
+  const readLineHeight = (role: StyleRole): number => readNum(lineHeights?.[role]) ?? base.lineHeights[role];
+
+  return {
+    ...base,
+    fontFamily: typeof typography.fontFamily === "string" && typography.fontFamily.trim().length > 0
+      ? typography.fontFamily
+      : base.fontFamily,
+    sizes: {
+      title: readSize("title"),
+      subtitle: readSize("subtitle"),
+      body: readSize("body"),
+      small: readSize("small"),
+      muted: readSize("small"),
+      bullets: readSize("body"),
+    },
+    lineHeights: {
+      title: readLineHeight("title"),
+      subtitle: readLineHeight("subtitle"),
+      body: readLineHeight("body"),
+      small: readLineHeight("small"),
+      muted: readLineHeight("small"),
+      bullets: readLineHeight("body"),
+    },
+    colors: {
+      title: typeof colors?.title === "string" ? colors.title : base.colors.title,
+      body: typeof colors?.body === "string" ? colors.body : base.colors.body,
+      muted: typeof colors?.muted === "string" ? colors.muted : base.colors.muted,
+    },
+  };
+};
+
+const cleanText = (value: string): string => value
+  .replace(/\*\*(.*?)\*\*/g, "$1")
+  .replace(/^#+\s*/gm, "")
+  .replace(/\[[^\]]+\]\([^)]*\)/g, "")
+  .replace(/\bhttps?:\/\/\S+/g, "")
+  .replace(/\r\n/g, "\n")
+  .replace(/\n{3,}/g, "\n\n")
+  .trim();
+
+const toBullets = (text: string): string => {
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => line.replace(/^\d+[.)]\s*/, "").replace(/^[-•]\s*/, ""))
+    .slice(0, 6)
+    .map((line) => `• ${clip(line, 80)}`);
+
+  return lines.join("\n");
+};
+
+export const normalizeText = (key: string, value: string): string => {
+  const kind = guessKind(key);
+  const role = styleRoleByKey(key);
+  const base = cleanText(value);
+
+  if (kind === "bullets") {
+    return toBullets(base);
+  }
+
+  if (role === "title") {
+    const words = base.split(/\s+/).filter(Boolean);
+    return words.length <= 9 ? base : `${words.slice(0, 9).join(" ")}…`;
+  }
+
+  const sentenceLike = base
+    .split(/(?<=[.!?])\s+/)
+    .filter((part) => part.trim().length > 0)
+    .slice(0, 2)
+    .join(" ");
+  return clip(sentenceLike || base, role === "body" ? 220 : 160);
+};
+
+const applyTextProps = (record: Record<string, unknown>, props: { fontFamily: string; fontSize: number; lineHeight: number; color: string }): number => {
+  let touched = 0;
+  const styleTargets = [record, toRecord(record.style), toRecord(record.textStyle), toRecord(record.paragraphStyle)].filter(Boolean) as Record<string, unknown>[];
+
+  for (const target of styleTargets) {
+    if (target.fontFamily !== props.fontFamily) {
+      target.fontFamily = props.fontFamily;
+      touched += 1;
+    }
+    if (target.fontSize !== props.fontSize) {
+      target.fontSize = props.fontSize;
+      touched += 1;
+    }
+    if (target.lineHeight !== props.lineHeight) {
+      target.lineHeight = props.lineHeight;
+      touched += 1;
+    }
+    if (target.color !== props.color) {
+      target.color = props.color;
+      touched += 1;
     }
   }
 
-  return updated;
-};
-
-export const enforceFontFamily = (doc: unknown, fontFamily: string): { touched: number } => {
-  const visited = new Set<object>();
-  let touched = 0;
-
   const walk = (node: unknown): void => {
     if (!node || typeof node !== "object") return;
-    if (visited.has(node as object)) return;
-    visited.add(node as object);
-
     if (Array.isArray(node)) {
       node.forEach(walk);
       return;
     }
 
-    const record = node as Record<string, unknown>;
-    touched += applyFontFamilyOnRecord(record, fontFamily);
-
-    for (const value of Object.values(record)) {
-      walk(value);
+    const current = node as Record<string, unknown>;
+    const style = toRecord(current.style);
+    if (style && style.color !== props.color) {
+      style.color = props.color;
+      touched += 1;
     }
+
+    Object.values(current).forEach(walk);
   };
 
-  walk(doc);
-  return { touched };
+  walk(record.runs);
+
+  return touched;
 };
 
-const readElementFontSize = (element: Record<string, unknown>): number => {
-  const direct = readNum(element.fontSize);
-  if (direct && direct > 0) return direct;
-
-  const style = toRecord(element.style);
-  const styleSize = style ? readNum(style.fontSize) : null;
-  if (styleSize && styleSize > 0) return styleSize;
-
-  const textStyle = toRecord(element.textStyle);
-  const textStyleSize = textStyle ? readNum(textStyle.fontSize) : null;
-  if (textStyleSize && textStyleSize > 0) return textStyleSize;
-
-  return 24;
+const getElement = (doc: unknown, slide: number, elementIndex: number): Record<string, unknown> | null => {
+  const slides = toRecord(doc)?.slides;
+  const slideArray = Array.isArray(slides) ? slides : [];
+  const slideRecord = toRecord(slideArray[slide - 1]);
+  const elements = slideRecord && Array.isArray(slideRecord.elements) ? slideRecord.elements : [];
+  return toRecord(elements[elementIndex]);
 };
 
-const writeElementFontSize = (element: Record<string, unknown>, size: number): void => {
-  const style = toRecord(element.style);
-  if (style) {
-    style.fontSize = size;
-  } else {
-    element.style = { fontSize: size };
+export const applyTypographyStandards = (params: {
+  doc: unknown;
+  placeholderLocations: PlaceholderLocation[];
+  themeTypography: TypographyConfig;
+}): TypographyApplyStats => {
+  const byElement = new Map<string, PlaceholderLocation>();
+  for (const location of params.placeholderLocations) {
+    const key = `${location.slide}-${location.elementIndex}`;
+    if (!byElement.has(key)) byElement.set(key, location);
   }
 
-  const textStyle = toRecord(element.textStyle);
-  if (textStyle) {
-    textStyle.fontSize = size;
+  let touched = 0;
+  for (const location of byElement.values()) {
+    const element = getElement(params.doc, location.slide, location.elementIndex);
+    if (!element) continue;
+    const role = styleRoleByKey(location.key);
+    const color = role === "muted" || role === "small" ? params.themeTypography.colors.muted
+      : (role === "title" ? params.themeTypography.colors.title : params.themeTypography.colors.body);
+
+    touched += applyTextProps(element, {
+      fontFamily: params.themeTypography.fontFamily,
+      fontSize: params.themeTypography.sizes[role],
+      lineHeight: params.themeTypography.lineHeights[role],
+      color,
+    });
   }
+
+  return {
+    touched,
+    colorsApplied: touched > 0,
+    themeColorMode: params.themeTypography.mode,
+  };
 };
 
 const charsCapacity = (w: number, h: number, fontSize: number, lineHeight: number): number => {
@@ -143,151 +279,77 @@ const charsCapacity = (w: number, h: number, fontSize: number, lineHeight: numbe
   return charsPerLine * maxLines;
 };
 
-const truncateByKind = (text: string, key: string, maxCharsEst: number, charsPerLine: number, maxLines: number): string => {
-  const kind = guessKind(key);
-
-  if (kind === "bullets") {
-    const lines = text
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .slice(0, maxLines)
-      .map((line) => {
-        const raw = line.replace(/^[-•]\s*/, "");
-        const clipped = raw.length > charsPerLine ? `${raw.slice(0, Math.max(0, charsPerLine - 1))}…` : raw;
-        return `• ${clipped}`;
-      });
-    return lines.join("\n");
-  }
-
-  if (text.length <= maxCharsEst) return text;
-  const limit = Math.max(1, maxCharsEst - 1);
-  return `${text.slice(0, limit)}…`;
-};
-
 export const autoFitText = (params: {
   doc: unknown;
   placeholderLocations: PlaceholderLocation[];
-  scope: "placeholders" | "all";
-  limits: {
-    title: { min: number; max: number };
-    body: { min: number; max: number };
-    bullets: { min: number; max: number };
-  };
+  themeTypography: TypographyConfig;
 }): TextFitStats => {
-  const slides = toRecord(params.doc)?.slides;
-  const slideArray = Array.isArray(slides) ? slides : [];
-
-  const targets = params.scope === "all"
-    ? slideArray.flatMap((slide, slideIndex) => {
-        const slideRecord = toRecord(slide);
-        const elements = slideRecord && Array.isArray(slideRecord.elements) ? slideRecord.elements : [];
-        return elements.map((_element, elementIndex) => ({ key: "body", slide: slideIndex + 1, elementIndex }));
-      })
-    : [...new Map(params.placeholderLocations.map((location) => [`${location.slide}-${location.elementIndex}-${location.key}`, location])).values()];
-
+  const uniqueTargets = [...new Map(params.placeholderLocations.map((location) => [`${location.slide}-${location.elementIndex}-${location.key}`, location])).values()];
   const items: TextFitItem[] = [];
   let overflowCount = 0;
   let truncatedCount = 0;
 
-  for (const target of targets) {
-    const slideRecord = toRecord(slideArray[target.slide - 1]);
-    const elements = slideRecord && Array.isArray(slideRecord.elements) ? slideRecord.elements : [];
-    const element = toRecord(elements[target.elementIndex]);
+  for (const target of uniqueTargets) {
+    const element = getElement(params.doc, target.slide, target.elementIndex);
     if (!element) continue;
 
-    const textParts: string[] = [];
-    const collectText = (node: unknown): void => {
-      if (typeof node === "string") {
-        textParts.push(node);
-        return;
-      }
-      if (!node || typeof node !== "object") return;
-      if (Array.isArray(node)) {
-        node.forEach(collectText);
-        return;
-      }
-      const record = node as Record<string, unknown>;
-      for (const [key, value] of Object.entries(record)) {
-        if (TEXT_KEYS.has(key) && typeof value === "string") {
-          textParts.push(value);
-        } else {
-          collectText(value);
-        }
-      }
-    };
+    const role = styleRoleByKey(target.key);
+    const baseFontSize = params.themeTypography.sizes[role];
+    const minFontSize = role === "title" ? 26 : 16;
+    const maxFontSize = baseFontSize;
 
-    collectText(element);
-    const text = textParts.join("\n").trim();
+    const text = typeof element.text === "string" ? element.text.trim() : "";
     if (!text) continue;
 
     const width = readNum(element.width) ?? readNum(element.w) ?? 600;
     const height = readNum(element.height) ?? readNum(element.h) ?? 200;
-    const lineHeight = readNum(element.lineHeight) ?? 1.15;
-    const kind = guessKind(target.key);
-    const limits = params.limits[kind];
+    const lineHeight = readNum(toRecord(element.style)?.lineHeight) ?? params.themeTypography.lineHeights[role] ?? 1.15;
 
-    const origFontSize = readElementFontSize(element);
-    let fontSize = origFontSize;
-
+    const origFontSize = readNum(toRecord(element.style)?.fontSize) ?? baseFontSize;
+    let fontSize = Math.min(maxFontSize, Math.max(minFontSize, origFontSize));
     let maxCharsEst = charsCapacity(width, height, fontSize, lineHeight);
 
     let wasShrunk = false;
-    let wasGrown = false;
-
-    const shrinkStep = kind === "title" ? 3 : 2;
-    while (text.length > maxCharsEst && fontSize > limits.min) {
-      fontSize -= shrinkStep;
+    while (text.length > maxCharsEst && fontSize > minFontSize) {
+      fontSize -= role === "title" ? 2 : 1;
       wasShrunk = true;
       maxCharsEst = charsCapacity(width, height, fontSize, lineHeight);
     }
 
-    while (text.length < maxCharsEst * 0.55 && fontSize < limits.max) {
-      fontSize += 1;
-      const nextCap = charsCapacity(width, height, fontSize, lineHeight);
-      if (text.length > nextCap) {
-        fontSize -= 1;
-        break;
-      }
-      wasGrown = true;
-      maxCharsEst = nextCap;
-    }
-
-    const charsPerLine = Math.max(12, Math.floor(width / (fontSize * 0.55)));
-    const maxLines = Math.max(1, Math.floor(height / (fontSize * lineHeight * 1.1)));
-
+    let nextText = text;
     let wasTruncated = false;
-    if (text.length > maxCharsEst) {
+    if (nextText.length > maxCharsEst) {
       overflowCount += 1;
-      wasTruncated = true;
       truncatedCount += 1;
-      const truncated = truncateByKind(text, target.key, maxCharsEst, charsPerLine, maxLines);
-      if (typeof element.text === "string") {
-        element.text = truncated;
+      wasTruncated = true;
+      if (role === "bullets") {
+        nextText = toBullets(nextText);
       }
+      nextText = clip(nextText, maxCharsEst);
     }
 
-    writeElementFontSize(element, fontSize);
+    if (typeof element.text === "string") element.text = nextText;
+    const style = toRecord(element.style) ?? ({} as Record<string, unknown>);
+    style.fontSize = fontSize;
+    style.lineHeight = lineHeight;
+    element.style = style;
 
     items.push({
       key: target.key,
+      role,
       slide: target.slide,
       elementIndex: target.elementIndex,
+      baseFontSize,
       origFontSize,
       finalFontSize: fontSize,
       textLen: text.length,
       maxCharsEst,
       wasShrunk,
-      wasGrown,
       wasTruncated,
     });
   }
 
-  return {
-    overflowCount,
-    truncatedCount,
-    items,
-  };
+  return { overflowCount, truncatedCount, items };
 };
 
 export const generateLocalFallback = (params: { key: string; topic: string; slideNumber: number }): string => {

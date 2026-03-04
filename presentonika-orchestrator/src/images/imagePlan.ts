@@ -426,6 +426,19 @@ export const remapImageTargetsToDoc = (params: { targets: ImageSlotTarget[]; doc
   });
 };
 
+
+export const buildImagePromptFallback = (params: { topic: string; slideTitle: string; slideSummary: string; kind: ImagePlanSlot["kind"] }): { query: string; hint: string; negative: string[]; styleHint: string } => {
+  const titleWords = params.slideTitle.split(/\s+/).filter(Boolean).slice(0, 10).join(" ");
+  const summaryWords = params.slideSummary.split(/\s+/).filter(Boolean).slice(0, 3).join(" ");
+  const query = [params.topic, titleWords, summaryWords, "фото"].filter((item) => item.length > 0).join(" ").replace(/\s+/g, " ").trim();
+  return {
+    query: trim(query, 180),
+    hint: `Искать ${params.kind} по теме слайда; исключить watermark/lowres`,
+    negative: ["watermark", "nsfw", "lowres", "logo", "text"],
+    styleHint: styleFromKind(params.kind),
+  };
+};
+
 export const buildImagePlanFromResolvedTargets = (params: {
   resolvedTargets: ResolvedImageSlotTarget[];
   doc: unknown;

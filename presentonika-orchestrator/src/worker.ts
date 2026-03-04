@@ -9,10 +9,10 @@ import { assertThemeTemplateExists, getThemeDir, readThemeMap, readThemeSafe } f
 import { readDocJsonFromTemplateZip } from "./themes/templateZip";
 import { extractImageSlots, extractPlaceholderLocations, inferSlideCount, normalizePlaceholders } from "./themes/parseDoc";
 import { applyVariants } from "./templates/applyVariants";
-import { applyFillsByLocations, scanRemainingFillTokens } from "./templates/applyFills";
+import { applyFillsByLocations, extractRemainingKeys, scanRemainingFillTokens } from "./templates/applyFills";
 import { assembleZip } from "./templates/assembleZip";
 import { planImageReplacements } from "./images/planImageReplacements";
-import { buildImagePlanFromMap, buildImagePlanWithDiagnostics } from "./images/imagePlan";
+import { buildImagePlanFromMap, buildImagePlanWithDiagnostics, buildImagePromptFallback } from "./images/imagePlan";
 import { generateBackgrounds } from "./backgrounds/generateBackgrounds";
 import { normalizeBackgroundTheme } from "./backgrounds/theme";
 import { uploadOutzip } from "./wp/uploadOutzip";
@@ -28,6 +28,7 @@ import { buildSystemPrompt, buildUserPrompt } from "./llm/prompt";
 import { mergeFills } from "./llm/mergeFills";
 import { aggregateFillCounts, buildBatches } from "./llm/batching";
 import { calcLlmRetryDelayMs, isRetryableLlmError } from "./llm/retry";
+import { applyTypographyStandards, autoFitText, generateLocalFallback, normalizeText, resolveThemeTypography } from "./templates/textPostprocess";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
@@ -73,6 +74,7 @@ const LLM_RETRIES = Number.parseInt(process.env.LLM_RETRIES || "2", 10);
 const LLM_RETRY_BASE_DELAY_MS = Number.parseInt(process.env.LLM_RETRY_BASE_DELAY_MS || "400", 10);
 const LLM_RETRY_MAX_DELAY_MS = Number.parseInt(process.env.LLM_RETRY_MAX_DELAY_MS || "5000", 10);
 const LLM_RETRY_ON_ABORT = process.env.LLM_RETRY_ON_ABORT !== "false";
+const FAIL_ON_REMAINING_TOKENS = process.env.FAIL_ON_REMAINING_TOKENS === "true";
 
 const MAX_SLIDES = parseInt(process.env.MAX_SLIDES || "30", 10);
 const MAX_TEMPLATE_ZIP_BYTES = parseInt(process.env.MAX_TEMPLATE_ZIP_BYTES || "200000000", 10);
@@ -177,6 +179,51 @@ const applyImagePlanPatch = (params: {
       slot.negative = slotPatch.negative;
     }
   }
+};
+
+const chunkKeys = <T>(items: T[], chunkSize: number): T[][] => {
+  if (chunkSize <= 0) return [items];
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+  return chunks;
+};
+
+const extractSlideFromKey = (key: string): number => {
+  const match = key.match(/s(\d+)_/i);
+  if (!match?.[1]) return 1;
+  const num = Number.parseInt(match[1], 10);
+  return Number.isFinite(num) && num > 0 ? num : 1;
+};
+
+const buildSlideSummaries = (fills: Record<string, string>, slideCount: number): Record<number, string> => {
+  const summaries: Record<number, string> = {};
+  const bySlide: Record<number, string[]> = {};
+
+  for (const [key, value] of Object.entries(fills)) {
+    const slide = extractSlideFromKey(key);
+    bySlide[slide] = bySlide[slide] || [];
+    bySlide[slide].push(`${key}: ${value}`);
+  }
+
+  for (let slide = 1; slide <= slideCount; slide += 1) {
+    const rows = bySlide[slide] || [];
+    const title = rows.find((row) => row.includes("_title")) || rows[0] || "";
+    const body = rows.slice(1).join(" ");
+    const keywords = body
+      .replace(/[•.,;:()]/g, " ")
+      .split(/\s+/)
+      .map((item) => item.trim())
+      .filter((item) => item.length > 4)
+      .slice(0, 6)
+      .join(" ");
+
+    const summary = `${title.replace(/^[^:]+:\s*/, "")} ${keywords}`.trim().replace(/\s+/g, " ");
+    summaries[slide] = summary.length > 180 ? `${summary.slice(0, 179)}…` : summary;
+  }
+
+  return summaries;
 };
 
 const worker = new Worker(
@@ -586,11 +633,15 @@ const worker = new Worker(
 
     const generatedFills = mergeFills(fillKeys, llmFills, "TEST_");
     const fills = { ...generatedFills, ...debugFills };
+    const topic = typeof job.data?.topic === "string" ? job.data.topic : "";
+    const language = typeof job.data?.language === "string" ? job.data.language : null;
+
+    for (const key of Object.keys(fills)) {
+      fills[key] = normalizeText(key, fills[key]);
+    }
 
     const fallbackKeysCount = fillKeys.filter((key) => {
-      if (Object.prototype.hasOwnProperty.call(debugFills, key)) {
-        return false;
-      }
+      if (Object.prototype.hasOwnProperty.call(debugFills, key)) return false;
       return fills[key] === `TEST_${key}`;
     }).length;
 
@@ -600,7 +651,94 @@ const worker = new Worker(
     llmDiagnostics.usedFallbackForAll = fillKeys.length > 0 && fallbackKeysCount === fillKeys.length;
 
     const fillsStats = applyFillsByLocations(doc, placeholderScan.locations, fills);
-    const remainingFillTokenStats = scanRemainingFillTokens(doc);
+    let remainingFillTokenStats = scanRemainingFillTokens(doc);
+    let remainingKeys = extractRemainingKeys(remainingFillTokenStats.remainingSamples);
+
+    const qualityGate = {
+      remainingKeysCount: remainingKeys.length,
+      remainingKeysSample: remainingKeys.slice(0, 15),
+      targetedPassAttempted: false,
+      targetedPassOk: false,
+      targetedPassReceivedKeysCount: 0,
+      localFallbackAppliedKeysCount: 0,
+      finalRemainingTestTokensCount: remainingFillTokenStats.remainingTestTokensCount,
+      finalRemainingMustacheTokensCount: remainingFillTokenStats.remainingMustacheTokensCount,
+      hint: undefined as string | undefined,
+    };
+
+    if (remainingKeys.length > 0 && LLM_ENABLED) {
+      qualityGate.targetedPassAttempted = true;
+      try {
+        const llmClient = new DeepSeekClient();
+        const targetBatches = chunkKeys(remainingKeys, 5);
+        let targetedReceived = 0;
+
+        for (const keys of targetBatches) {
+          const response = await llmClient.generate({
+            presentationId,
+            themeId,
+            topic,
+            language,
+            fillKeys: keys,
+            imagePlan: buildImagePlanFromMap({ map, doc, presentationId, themeId, topic, language }),
+            mode: "targeted_fills",
+            strictKeysRequired: true,
+          });
+          for (const [key, value] of Object.entries(response.fills)) {
+            fills[key] = normalizeText(key, value);
+            targetedReceived += 1;
+          }
+        }
+
+        const targetLocations = placeholderScan.locations.filter((location) => remainingKeys.includes(location.key));
+        applyFillsByLocations(doc, targetLocations, fills);
+        remainingFillTokenStats = scanRemainingFillTokens(doc);
+        remainingKeys = extractRemainingKeys(remainingFillTokenStats.remainingSamples);
+        qualityGate.targetedPassOk = true;
+        qualityGate.targetedPassReceivedKeysCount = targetedReceived;
+      } catch (error) {
+        jobLogger.warn({ err: error }, "quality gate targeted LLM pass failed");
+      }
+    }
+
+    if (remainingKeys.length > 0) {
+      for (const key of remainingKeys) {
+        if (key.startsWith("TEST_")) continue;
+        const slideNumber = extractSlideFromKey(key);
+        fills[key] = normalizeText(key, generateLocalFallback({ key, topic, slideNumber }));
+        qualityGate.localFallbackAppliedKeysCount += 1;
+      }
+      const targetLocations = placeholderScan.locations.filter((location) => remainingKeys.includes(location.key));
+      applyFillsByLocations(doc, targetLocations, fills);
+      remainingFillTokenStats = scanRemainingFillTokens(doc);
+      remainingKeys = extractRemainingKeys(remainingFillTokenStats.remainingSamples);
+    }
+
+    qualityGate.remainingKeysCount = remainingKeys.length;
+    qualityGate.remainingKeysSample = remainingKeys.slice(0, 15);
+    qualityGate.finalRemainingTestTokensCount = remainingFillTokenStats.remainingTestTokensCount;
+    qualityGate.finalRemainingMustacheTokensCount = remainingFillTokenStats.remainingMustacheTokensCount;
+
+    if (remainingKeys.length > 0) {
+      qualityGate.hint = "BUG: tokens remained after targeted pass + local fallback";
+      jobLogger.error({ remainingKeys, samples: remainingFillTokenStats.remainingSamples }, qualityGate.hint);
+      if (FAIL_ON_REMAINING_TOKENS) {
+        throw new Error("RemainingTokensAfterQualityGate");
+      }
+    }
+
+    const theme = await readThemeSafe(themeId);
+    const themeTypography = resolveThemeTypography(themeId, theme);
+    const typographyStats = applyTypographyStandards({
+      doc,
+      placeholderLocations: placeholderScan.locations,
+      themeTypography,
+    });
+    const textFitStats = autoFitText({
+      doc,
+      placeholderLocations: placeholderScan.locations,
+      themeTypography,
+    });
 
     await job.updateProgress(75);
     jobLogger.info({ stage: "apply_variants_fills" }, "progress updated");
@@ -617,6 +755,7 @@ const worker = new Worker(
     let imageSlotsInvalidCount = 0;
     let diagnosticsJsonString: string | null = null;
     let diagnosticsIncluded = false;
+    const imagePromptsDiagnostics = { attempted: false, ok: false, slotCount: 0, filledCount: 0, missingCount: 0, sample: [] as Array<{ slotId: string; query: string }> };
 
     try {
       const imagePlanBuild = buildImagePlanWithDiagnostics({
@@ -638,6 +777,63 @@ const worker = new Worker(
       if (llmImagePlanPatch && llmImagePlanPatch.slots.length > 0) {
         applyImagePlanPatch({ imagePlanDocument, patch: llmImagePlanPatch });
       }
+
+      const slideSummaries = buildSlideSummaries(fills, slideCount);
+      imagePromptsDiagnostics.slotCount = imagePlanDocument.slots.length;
+      if (LLM_ENABLED && imagePlanDocument.slots.length > 0) {
+        imagePromptsDiagnostics.attempted = true;
+        try {
+          const llmClient = new DeepSeekClient();
+          const batches = chunkKeys(imagePlanDocument.slots, 7);
+          let generatedCount = 0;
+          for (const batch of batches) {
+            const response = await llmClient.generate({
+              presentationId,
+              themeId,
+              topic,
+              language,
+              fillKeys: [],
+              imagePlan: imagePlanDocument,
+              mode: "image_prompts",
+              imagePromptsInput: batch.map((slot) => ({
+                slotId: slot.slotId,
+                slide: slot.slide,
+                kind: slot.kind,
+                aspect: slot.aspect,
+                slideSummary: slideSummaries[slot.slide] || topic,
+              })),
+            });
+            const patchSlots = response.imagePlanPatch?.slots || [];
+            generatedCount += patchSlots.length;
+            if (patchSlots.length > 0) {
+              applyImagePlanPatch({ imagePlanDocument, patch: { slots: patchSlots } });
+            }
+          }
+          imagePromptsDiagnostics.ok = true;
+          imagePromptsDiagnostics.filledCount = generatedCount;
+        } catch (error) {
+          jobLogger.warn({ err: error }, "image prompts llm failed, using fallback");
+        }
+      }
+
+      for (const slot of imagePlanDocument.slots) {
+        const needsFallback = !slot.query || slot.query.toLowerCase().includes("слайд") || slot.query.toLowerCase().includes("topic");
+        if (needsFallback) {
+          const fallback = buildImagePromptFallback({
+            topic,
+            slideTitle: fills[`s${slot.slide}_title`] || "",
+            slideSummary: slideSummaries[slot.slide] || topic,
+            kind: slot.kind,
+          });
+          slot.query = fallback.query;
+          slot.hint = fallback.hint;
+          slot.negative = fallback.negative;
+          slot.styleHint = slot.styleHint || fallback.styleHint;
+        }
+      }
+
+      imagePromptsDiagnostics.sample = imagePlanDocument.slots.slice(0, 8).map((slot) => ({ slotId: slot.slotId, query: slot.query }));
+      imagePromptsDiagnostics.missingCount = imagePlanDocument.slots.filter((slot) => !slot.query || slot.query.trim().length < 5).length;
 
       imagePlanJsonString = JSON.stringify(imagePlanDocument, null, 2);
       imagePlanIncluded = true;
@@ -676,7 +872,23 @@ const worker = new Worker(
           remainingTestTokensCount: remainingFillTokenStats.remainingTestTokensCount,
           remainingMustacheTokensCount: remainingFillTokenStats.remainingMustacheTokensCount,
           remainingSamples: remainingFillTokenStats.remainingSamples,
+          remainingKeysCount: qualityGate.remainingKeysCount,
+          remainingKeysSample: qualityGate.remainingKeysSample,
+          targetedPassAttempted: qualityGate.targetedPassAttempted,
+          targetedPassOk: qualityGate.targetedPassOk,
+          targetedPassReceivedKeysCount: qualityGate.targetedPassReceivedKeysCount,
+          localFallbackAppliedKeysCount: qualityGate.localFallbackAppliedKeysCount,
+          finalRemainingTestTokensCount: qualityGate.finalRemainingTestTokensCount,
+          finalRemainingMustacheTokensCount: qualityGate.finalRemainingMustacheTokensCount,
+          hint: qualityGate.hint,
         },
+        typography: {
+          colorsApplied: typographyStats.colorsApplied,
+          themeColorMode: typographyStats.themeColorMode,
+          touched: typographyStats.touched,
+        },
+        textFit: textFitStats,
+        imagePrompts: imagePromptsDiagnostics,
         stats: {
           slides: slideCount,
           elementsScanned: placeholderScan.elementsScanned,
@@ -718,7 +930,6 @@ const worker = new Worker(
     await job.updateProgress(85);
     jobLogger.info({ stage: "generate_backgrounds" }, "progress updated");
 
-    const theme = await readThemeSafe(themeId);
     const backgroundTheme = normalizeBackgroundTheme(theme);
     const backgrounds = await generateBackgrounds({
       jobId,
@@ -1033,6 +1244,8 @@ const worker = new Worker(
         usedFallbackForAll: llmDiagnostics.usedFallbackForAll,
         remainingTestTokensCount: remainingFillTokenStats.remainingTestTokensCount,
         remainingMustacheTokensCount: remainingFillTokenStats.remainingMustacheTokensCount,
+        finalRemainingTestTokensCount: qualityGate.finalRemainingTestTokensCount,
+        finalRemainingMustacheTokensCount: qualityGate.finalRemainingMustacheTokensCount,
         imageReplacedCount,
         imageMissing: imageMissingCapped,
         backgroundsPlannedCount: slideCount,
@@ -1117,6 +1330,8 @@ const worker = new Worker(
         usedFallbackForAll: llmDiagnostics.usedFallbackForAll,
         remainingTestTokensCount: remainingFillTokenStats.remainingTestTokensCount,
         remainingMustacheTokensCount: remainingFillTokenStats.remainingMustacheTokensCount,
+        finalRemainingTestTokensCount: qualityGate.finalRemainingTestTokensCount,
+        finalRemainingMustacheTokensCount: qualityGate.finalRemainingMustacheTokensCount,
         imageReplacedCount,
         imageMissingCount: imageMissing.length,
         backgroundsPlannedCount: slideCount,

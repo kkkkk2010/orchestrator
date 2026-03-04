@@ -783,3 +783,15 @@ LLM_RETRY_ON_ABORT=true
 Даже если RAG вернул пустые фрагменты, в LLM всегда передаётся `RAG_MINI_PROMPT`:
 - сначала используй приложенные фрагменты;
 - если их недостаточно — дополни ответ собственными знаниями без выдуманных ссылок `[n]`.
+
+## Quality Gate v1 checks
+
+```bash
+unzip -p out/<jobId>.out.zip diagnostics.json | jq '.fills, .typography, .textFit, .imagePrompts'
+unzip -p out/<jobId>.out.zip doc.json | rg "TEST_|{{"
+```
+
+Ожидаемо после Quality Gate:
+- `.fills.finalRemainingTestTokensCount == 0`
+- `.fills.finalRemainingMustacheTokensCount == 0`
+- во втором выводе нет совпадений.

@@ -76,7 +76,7 @@ export class DeepSeekClient implements LLMClient {
 
   async generate(input: LLMGenerateInput): Promise<LLMGenerateOutput> {
     const startedAt = Date.now();
-    const system = buildSystemPrompt();
+    const system = buildSystemPrompt(input.mode || "fills");
     const user = buildUserPrompt(input);
 
     let attempt = 0;

@@ -278,6 +278,31 @@ export const scanRemainingFillTokens = (doc: unknown, maxSamples = 10): Remainin
   };
 };
 
+
+export const extractRemainingKeys = (samples: RemainingTokenSample[]): string[] => {
+  const found = new Set<string>();
+  const testRegex = /TEST_([A-Za-z0-9_:-]+)/g;
+  const mustacheRegex = /{{\s*([A-Za-z0-9_:-]+)\s*}}/g;
+
+  for (const sample of samples) {
+    let match = testRegex.exec(sample.snippet);
+    while (match) {
+      if (match[1]) found.add(match[1]);
+      match = testRegex.exec(sample.snippet);
+    }
+    testRegex.lastIndex = 0;
+
+    match = mustacheRegex.exec(sample.snippet);
+    while (match) {
+      if (match[1]) found.add(match[1]);
+      match = mustacheRegex.exec(sample.snippet);
+    }
+    mustacheRegex.lastIndex = 0;
+  }
+
+  return [...found];
+};
+
 export const applyFills = (doc: unknown, fills: Record<string, string>): ApplyFillsStats => {
   const missingKeysSet = new Set<string>();
   const replacedCount = walkAndReplace(doc, fills, missingKeysSet, new Set<object>());

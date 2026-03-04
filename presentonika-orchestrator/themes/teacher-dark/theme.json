@@ -15,5 +15,25 @@
     "blobAlphaMax": 0.36,
     "vignette": 0.2,
     "accentBlobChance": 0.6
+  },
+  "typography": {
+    "fontFamily": "Times New Roman",
+    "sizes": {
+      "title": 44,
+      "subtitle": 28,
+      "body": 22,
+      "small": 18
+    },
+    "lineHeights": {
+      "title": 1.05,
+      "subtitle": 1.12,
+      "body": 1.18,
+      "small": 1.15
+    },
+    "colors": {
+      "title": "#FFFFFF",
+      "body": "#F2F2F2",
+      "muted": "#CFCFCF"
+    }
   }
 }
