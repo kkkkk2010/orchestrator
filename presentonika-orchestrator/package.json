@@ -20,7 +20,13 @@
     "template:patch": "tsx src/tools/templatePatch.ts",
     "template:generate": "tsx src/tools/templateGenerate.ts",
     "tools:build": "tsc -p tsconfig.json",
-    "template:generate:node": "npm run tools:build && node dist/tools/templateGenerate.js"
+    "template:generate:node": "npm run tools:build && node dist/tools/templateGenerate.js",
+    "layout:validate": "tsx src/layouts/validate.ts",
+    "layout:inspect": "tsx src/layouts/inspect.ts",
+    "layout:import": "tsx src/layouts/importLayout.ts",
+    "layout:validate:node": "npm run tools:build && node dist/layouts/validate.js",
+    "layout:inspect:node": "npm run tools:build && node dist/layouts/inspect.js",
+    "layout:import:node": "npm run tools:build && node dist/layouts/importLayout.js"
   },
   "dependencies": {
     "bullmq": "^5.12.7",

@@ -31,7 +31,7 @@ import { mergeFills } from "./llm/mergeFills";
 import { aggregateFillCounts, buildBatches } from "./llm/batching";
 import { calcLlmRetryDelayMs, isRetryableLlmError } from "./llm/retry";
 import { applyTypographyStandards, autoFitText, dedupeBulletLines, generateLocalFallback, generateLocalFallbackBullets, normalizeText, resolveThemeTypography, styleRoleByKey } from "./templates/textPostprocess";
-import { applyLayoutEngine } from "./layout";
+import { compileLayoutPresentation } from "./layouts";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
@@ -89,6 +89,8 @@ const IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR = process.env.IMAGEPLAN_DETECT_FAL
 
 
 const LAYOUT_ENGINE_ENABLED = process.env.LAYOUT_ENGINE_ENABLED === "true";
+const LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT = process.env.LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT === "true";
+const LAYOUT_ENGINE_VARIATION = process.env.LAYOUT_ENGINE_VARIATION !== "false";
 
 
 const cleanupStagedFile = async (params: {
@@ -225,7 +227,7 @@ const worker = new Worker(
     await job.updateProgress(10);
     jobLogger.info({ stage: "load_theme_pack" }, "progress updated");
     const themeDir = getThemeDir(themeId);
-    const templatePath = await assertThemeTemplateExists(themeId);
+    let templatePath = await assertThemeTemplateExists(themeId);
     mark("load_theme_pack");
 
     const templateStats = await fs.stat(templatePath);
@@ -367,9 +369,46 @@ const worker = new Worker(
     }
 
     const map = await readThemeMap(themeId);
-    const layoutDiagnostics = LAYOUT_ENGINE_ENABLED
-      ? applyLayoutEngine({ doc, map, seed: `${presentationId}:${themeId}` })
-      : { selectedLayouts: [], insertedTextPlaceholders: 0, insertedImagePlaceholders: 0 };
+    let layoutEngineDiagnostics = {
+      enabled: LAYOUT_ENGINE_ENABLED,
+      mode: "legacy_fallback" as "catalog" | "builtins" | "legacy_fallback",
+      selectedLayouts: [] as Array<{ slide: number; slideType: string; layoutId: string; source: "layouts-local" | "layouts" | "builtin"; hadFallback: boolean }>,
+      missingLayoutTypes: [] as string[],
+      slotBindingWarnings: [] as string[],
+      mergedAssetsCount: 0,
+    };
+    let layoutIds: string[] = [];
+    if (LAYOUT_ENGINE_ENABLED) {
+      try {
+        const compiled = await compileLayoutPresentation({
+          presentationId,
+          themeId,
+          jobId,
+          variation: LAYOUT_ENGINE_VARIATION,
+          legacyTemplateZipPath: templatePath,
+        });
+        (doc as Record<string, unknown>).slides = ((compiled.doc as Record<string, unknown>).slides || []) as unknown[];
+        templatePath = compiled.templateZipPath;
+        layoutEngineDiagnostics = compiled.diagnostics;
+        layoutIds = compiled.layoutIds;
+
+        const mapSlides = ((map as Record<string, unknown>).slides && typeof (map as Record<string, unknown>).slides === "object"
+          ? (map as Record<string, unknown>).slides
+          : {}) as Record<string, unknown>;
+        for (const [slide, imageAt] of Object.entries(compiled.imageAtBySlide)) {
+          const slideRow = (mapSlides[slide] && typeof mapSlides[slide] === "object" ? mapSlides[slide] : {}) as Record<string, unknown>;
+          slideRow.imageAt = imageAt;
+          mapSlides[slide] = slideRow;
+        }
+        (map as Record<string, unknown>).slides = mapSlides;
+      } catch (error) {
+        if (LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT) {
+          throw error instanceof Error ? error : new Error(String(error));
+        }
+        jobLogger.warn({ err: error }, "layout engine failed, fallback to legacy template pipeline");
+        layoutEngineDiagnostics.mode = "legacy_fallback";
+      }
+    }
     const debugFillsRaw = job.data?.debug?.fills;
     const debugFills = (debugFillsRaw && typeof debugFillsRaw === "object" ? debugFillsRaw : {}) as Record<string, string>;
     const debugFillsApplied = Object.keys(debugFills).length > 0;
@@ -904,12 +943,7 @@ const worker = new Worker(
             ? "Image plan slots resolved for editor picker"
             : "No final slots resolved. Check imageAt bindings or auto-detect settings.",
         },
-        layout: {
-          enabled: LAYOUT_ENGINE_ENABLED,
-          selectedLayouts: layoutDiagnostics.selectedLayouts,
-          insertedTextPlaceholders: layoutDiagnostics.insertedTextPlaceholders,
-          insertedImagePlaceholders: layoutDiagnostics.insertedImagePlaceholders,
-        },
+        layoutEngine: layoutEngineDiagnostics,
         llm: llmDiagnostics,
         fills: {
           fillKeysCount: fillKeys.length,
@@ -1289,9 +1323,10 @@ const worker = new Worker(
         imageSlotsInvalidCount,
         imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
         diagnosticsIncluded,
-        layoutSelectedCount: layoutDiagnostics.selectedLayouts.length,
-        layoutInsertedTextPlaceholders: layoutDiagnostics.insertedTextPlaceholders,
-        layoutInsertedImagePlaceholders: layoutDiagnostics.insertedImagePlaceholders,
+        layoutEngineEnabled: layoutEngineDiagnostics.enabled,
+        layoutEngineMode: layoutEngineDiagnostics.mode,
+        layoutIds,
+        mergedAssetsCount: layoutEngineDiagnostics.mergedAssetsCount,
         usedFallbackForAll: llmDiagnostics.usedFallbackForAll,
         remainingTestTokensCount: remainingFillTokenStats.remainingTestTokensCount,
         remainingMustacheTokensCount: remainingFillTokenStats.remainingMustacheTokensCount,
@@ -1378,9 +1413,10 @@ const worker = new Worker(
         imageSlotsInvalidCount,
         imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
         diagnosticsIncluded,
-        layoutSelectedCount: layoutDiagnostics.selectedLayouts.length,
-        layoutInsertedTextPlaceholders: layoutDiagnostics.insertedTextPlaceholders,
-        layoutInsertedImagePlaceholders: layoutDiagnostics.insertedImagePlaceholders,
+        layoutEngineEnabled: layoutEngineDiagnostics.enabled,
+        layoutEngineMode: layoutEngineDiagnostics.mode,
+        layoutIds,
+        mergedAssetsCount: layoutEngineDiagnostics.mergedAssetsCount,
         usedFallbackForAll: llmDiagnostics.usedFallbackForAll,
         remainingTestTokensCount: remainingFillTokenStats.remainingTestTokensCount,
         remainingMustacheTokensCount: remainingFillTokenStats.remainingMustacheTokensCount,

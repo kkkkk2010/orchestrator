@@ -841,3 +841,29 @@ Outputs:
 - `.tmp/template-qa/teacher-dark.generated.report.json`
 
 Template is ready when `missingKeysInTemplate` is empty.
+
+
+## Theme vs Layout
+
+- Theme отвечает только за style tokens (цвета/типографика/фон).
+- Layout отвечает за структуру слайда и хранится локально как `layout.out.zip + layout.json`.
+
+Локальные layout packs (не коммитятся):
+- `layouts-local/<layoutId>/layout.out.zip`
+- `layouts-local/<layoutId>/layout.json`
+
+CLI:
+- `npm run layout:import -- --zip ./my-cover.out.zip --id my-cover-v1 --slideType cover`
+- `npm run layout:validate -- my-cover-v1`
+- `npm run layout:inspect -- my-cover-v1`
+
+Env:
+- `LAYOUT_ENGINE_ENABLED=false`
+- `LAYOUT_ENGINE_DIR=layouts-local`
+- `LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT=false`
+- `LAYOUT_ENGINE_VARIATION=true`
+
+При `LAYOUT_ENGINE_ENABLED=true` worker сначала пробует layout engine (catalog/builtins), а при ошибке может уйти в legacy fallback (`template.out.zip + map.json`) если `LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT=false`.
+
+Диагностика: `diagnostics.layoutEngine` и `returnValue.assemble.layoutEngine*`.
+
