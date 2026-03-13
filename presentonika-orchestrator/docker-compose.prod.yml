@@ -9,6 +9,8 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    networks:
+      - presentonika_shared
 
   orchestrator-api:
     build: .
@@ -26,6 +28,8 @@ services:
       - ./.tmp:/app/.tmp
       - ./.staged:/app/.staged
       - ./themes:/app/themes:ro
+    networks:
+      - presentonika_shared
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 15s
@@ -46,6 +50,12 @@ services:
       - ./.tmp:/app/.tmp
       - ./.staged:/app/.staged
       - ./themes:/app/themes:ro
+    networks:
+      - presentonika_shared
 
 volumes:
   redis_data:
+
+networks:
+  presentonika_shared:
+    external: true

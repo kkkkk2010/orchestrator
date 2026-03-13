@@ -434,6 +434,18 @@ Exit code:
 ## Production deploy (Docker Compose)
 
 For VPS deployment (same host as `editor.presentonika.ru`) use `docker-compose.prod.yml` with 3 services:
+
+Before first start, create shared external network once:
+
+```bash
+docker network create presentonika_shared
+```
+
+Orchestrator services join this network and can resolve RAG by container name from another compose project, for example:
+
+```bash
+RAG_BASE_URL=http://rag-service:8000
+```
 - `redis`
 - `orchestrator-api` (HTTP API)
 - `orchestrator-worker` (BullMQ worker)
@@ -698,7 +710,7 @@ Orchestrator can enrich generation with retrieval results from external RAG serv
 
 - `RAG_ENABLED=false`
 - `RAG_FAIL_ON_ERROR=false`
-- `RAG_BASE_URL=http://localhost:8000`
+- `RAG_BASE_URL=http://rag-service:8000`
 - `RAG_API_KEY=`
 - `RAG_COLLECTION=default`
 - `RAG_MODE=retrieve` (`retrieve|query`)
@@ -737,7 +749,7 @@ A) `RAG_ENABLED=false`
 - run a job and verify `GET /jobs/:id -> returnValue.rag.enabled=false`.
 
 B) `RAG_ENABLED=true` + retrieve mode
-- set `RAG_BASE_URL=http://localhost:8000`, `RAG_API_KEY=...`;
+- set `RAG_BASE_URL=http://rag-service:8000`, `RAG_API_KEY=...`;
 - create job (`teacher-dark` or `_example`);
 - verify `returnValue.rag.ok=true` and `returnValue.rag.hitCount > 0`;
 - verify `.tmp/<jobId>/rag.json` exists;
@@ -783,7 +795,7 @@ unzip -p out/<jobId>.out.zip diagnostics.json | jq ' .llm '
 
 ```env
 RAG_ENABLED=true
-RAG_BASE_URL=http://localhost:8000
+RAG_BASE_URL=http://rag-service:8000
 RAG_API_KEY=super-secret-key
 RAG_COLLECTION=default
 RAG_MODE=retrieve
