@@ -1,6 +1,7 @@
 import { sleep } from "../util/sleep";
 import type { QueryResult, RagClient, RagQueryInput, RagRetrieveInput, RetrieveResult } from "./RagClient";
-import { ragQueryResponseSchema, ragRetrieveResponseSchema } from "./schema";
+import { ragQueryResponseSchema } from "./schema";
+import { normalizeRagRetrieveResponse } from "./normalize";
 
 export class RagHttpError extends Error {
   readonly stage: string;
@@ -15,29 +16,26 @@ export class RagHttpError extends Error {
 }
 
 const RETRYABLE_STATUS = new Set([429, 502, 503]);
-
 const normalizeBaseUrl = (url: string): string => url.replace(/\/+$/, "");
 
 const isRetryableNetworkError = (error: unknown): boolean => {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
+  if (!(error instanceof Error)) return false;
   const message = error.message.toLowerCase();
-  return (
-    message.includes("econnrefused") ||
-    message.includes("enotfound") ||
-    message.includes("etimedout") ||
-    message.includes("fetch failed") ||
-    message.includes("network")
-  );
+  return message.includes("econnrefused") || message.includes("enotfound") || message.includes("etimedout") || message.includes("fetch failed") || message.includes("network");
 };
 
 const calcRetryDelayMs = (attempt: number, baseDelayMs: number): number => {
   const backoff = Math.min(5000, baseDelayMs * (2 ** Math.max(0, attempt - 1)));
-  const jitter = Math.floor(Math.random() * 150);
-  return backoff + jitter;
+  return backoff + Math.floor(Math.random() * 150);
 };
+
+export const buildRetrieveRequestBody = (input: RagRetrieveInput): Record<string, unknown> => ({
+  query: input.query,
+  top_k: input.topK,
+  min_score: input.minScore,
+  collection: input.collection,
+  return_text: true,
+});
 
 export class HttpRagClient implements RagClient {
   private readonly baseUrl: string;
@@ -54,19 +52,17 @@ export class HttpRagClient implements RagClient {
     this.retryBaseDelayMs = Number.parseInt(process.env.RAG_RETRY_BASE_DELAY_MS || "400", 10);
   }
 
-  private async request<T>(params: {
+  private async request(params: {
     path: string;
     body?: Record<string, unknown>;
     method?: "GET" | "POST";
     stage: string;
-    parse: (json: unknown) => T;
-  }): Promise<T> {
+  }): Promise<{ json: unknown; status: number }> {
     const method = params.method || "POST";
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
-
       try {
         const response = await fetch(`${this.baseUrl}${params.path}`, {
           method,
@@ -79,67 +75,44 @@ export class HttpRagClient implements RagClient {
         });
 
         const text = await response.text();
-
         if (!response.ok) {
-          const shortBody = text.slice(0, 300).replace(/\s+/g, " ");
-          const error = new RagHttpError(`RagRequestFailed(${params.stage}): ${response.status} ${shortBody}`, {
-            stage: params.stage,
-            status: response.status,
-          });
-
+          const err = new RagHttpError(`RagRequestFailed(${params.stage}): ${response.status} ${text.slice(0, 300).replace(/\s+/g, " ")}`, { stage: params.stage, status: response.status });
           if (attempt < this.maxRetries && RETRYABLE_STATUS.has(response.status)) {
             await sleep(calcRetryDelayMs(attempt + 1, this.retryBaseDelayMs));
             continue;
           }
-
-          throw error;
+          throw err;
         }
 
-        const json = text ? (JSON.parse(text) as unknown) : {};
-        return params.parse(json);
+        return { json: text ? JSON.parse(text) as unknown : {}, status: response.status };
       } catch (error) {
-        if (error instanceof RagHttpError) {
-          throw error;
-        }
-
+        if (error instanceof RagHttpError) throw error;
         if (attempt < this.maxRetries && isRetryableNetworkError(error)) {
           await sleep(calcRetryDelayMs(attempt + 1, this.retryBaseDelayMs));
           continue;
         }
-
-        const message = error instanceof Error ? error.message : String(error);
-        throw new RagHttpError(`RagRequestFailed(${params.stage}): ${message}`, {
-          stage: params.stage,
-          status: null,
-        });
+        throw new RagHttpError(`RagRequestFailed(${params.stage}): ${error instanceof Error ? error.message : String(error)}`, { stage: params.stage, status: null });
       } finally {
         clearTimeout(timeout);
       }
     }
 
-    throw new RagHttpError(`RagRequestFailed(${params.stage}): retry limit reached`, {
-      stage: params.stage,
-      status: null,
-    });
+    throw new RagHttpError(`RagRequestFailed(${params.stage}): retry limit reached`, { stage: params.stage, status: null });
   }
 
   async retrieve(input: RagRetrieveInput): Promise<RetrieveResult> {
-    return this.request({
+    const response = await this.request({
       path: "/retrieve",
       stage: "retrieve",
-      body: {
-        query: input.query,
-        top_k: input.topK,
-        min_score: input.minScore,
-        collection: input.collection,
-        source_uris: input.sourceUris,
-      },
-      parse: (json) => ragRetrieveResponseSchema.parse(json),
+      body: buildRetrieveRequestBody(input),
     });
+
+    const normalized = normalizeRagRetrieveResponse(response.json, Number.parseInt(process.env.RAG_MAX_CONTEXT_CHARS || "12000", 10));
+    return { hits: normalized.hits, contextText: normalized.contextText, warnings: normalized.warnings, httpStatus: response.status };
   }
 
   async query(input: RagQueryInput): Promise<QueryResult> {
-    return this.request({
+    const response = await this.request({
       path: "/query",
       stage: "query",
       body: {
@@ -152,35 +125,15 @@ export class HttpRagClient implements RagClient {
         collection: input.collection,
         source_uris: input.sourceUris,
       },
-      parse: (json) => ragQueryResponseSchema.parse(json),
     });
+    const parsed = ragQueryResponseSchema.parse(response.json);
+    return { ...parsed, httpStatus: response.status };
   }
 
   async healthz(): Promise<boolean> {
-    try {
-      await this.request({
-        path: "/healthz",
-        method: "GET",
-        stage: "healthz",
-        parse: () => true,
-      });
-      return true;
-    } catch {
-      return false;
-    }
+    try { await this.request({ path: "/healthz", method: "GET", stage: "healthz" }); return true; } catch { return false; }
   }
-
   async readyz(): Promise<boolean> {
-    try {
-      await this.request({
-        path: "/readyz",
-        method: "GET",
-        stage: "readyz",
-        parse: () => true,
-      });
-      return true;
-    } catch {
-      return false;
-    }
+    try { await this.request({ path: "/readyz", method: "GET", stage: "readyz" }); return true; } catch { return false; }
   }
 }

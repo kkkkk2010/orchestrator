@@ -3,7 +3,7 @@ import { buildGeneratedDoc } from "../tools/templateGenerate";
 import { extractFillKeys } from "../themes/parseDoc";
 import { REQUIRED_SKELETON_KEYS } from "../tools/skeletonKeys";
 import { compressQuery } from "../images/imagePrompts";
-import { buildRagConfigLog, buildRagRequestLog, buildRagResponseLog } from "../rag/logging";
+import { buildRagConfigLog, buildRagHitsSampleLog, buildRagRequestLog, buildRagResponseLog } from "../rag/logging";
 
 export const runTemplateGeneratorTests = (): void => {
   {
@@ -34,10 +34,12 @@ export const runTemplateGeneratorTests = (): void => {
 
   {
     const cfg = buildRagConfigLog({ enabled: true, mode: "retrieve", collection: "default", topK: 8, minScore: 0.5, timeoutMs: 15000 });
-    const req = buildRagRequestLog({ sourceUrisCount: 2, querySnippet: "тема урока: test" });
-    const res = buildRagResponseLog({ ok: true, hitCount: 5, usedContextChars: 1234, elapsedMs: 150, topSourcesSample: ["a", "b"] });
+    const req = buildRagRequestLog({ endpoint: "/retrieve", querySnippet: "тема урока: test", topK: 8, minScore: 0.5, collection: "default" });
+    const res = buildRagResponseLog({ ok: true, httpStatus: 200, hitCount: 5, usedContextChars: 1234, elapsedMs: 150 });
+    const sample = buildRagHitsSampleLog([{ score: 0.82, source_uri: "s3://x", fragment_id: "f1" }]);
     assert.ok(cfg.includes("enabled=true"));
-    assert.ok(req.includes("sourceUrisCount=2"));
+    assert.ok(req.includes("endpoint=/retrieve"));
     assert.ok(res.includes("hitCount=5"));
+    assert.ok(sample.includes("rag.hits.sample"));
   }
 };

@@ -1,23 +1,25 @@
 import type { RagQueryResponse, RagRetrieveResponse } from "./schema";
 
-export type RagRequestInput = {
+export type RagRetrieveInput = {
+  query: string;
+  topK: number;
+  minScore: number;
+  collection: string;
+};
+
+export type RagQueryInput = {
   query: string;
   topK: number;
   minScore: number;
   collection: string;
   sourceUris?: string[];
-};
-
-export type RagRetrieveInput = RagRequestInput;
-
-export type RagQueryInput = RagRequestInput & {
   mode?: "grounded";
   citationStyle?: "fragments";
   returnSources?: boolean;
 };
 
-export type RetrieveResult = RagRetrieveResponse;
-export type QueryResult = RagQueryResponse;
+export type RetrieveResult = RagRetrieveResponse & { contextText: string; httpStatus?: number; warnings?: string[] };
+export type QueryResult = RagQueryResponse & { httpStatus?: number };
 
 export interface RagClient {
   retrieve(input: RagRetrieveInput): Promise<RetrieveResult>;

@@ -669,6 +669,27 @@ unzip -p out/<jobId>.out.zip diagnostics.json | jq .
 По умолчанию выключен (`false`), чтобы не менять текущий прод-пайплайн.
 Диагностика попадает в `diagnostics.json.layout` и в `returnValue.assemble` (`layoutSelectedCount`, `layoutInsertedTextPlaceholders`, `layoutInsertedImagePlaceholders`).
 
+## RAG retrieve API (actual contract)
+
+Orchestrator in `RAG_MODE=retrieve` now sends:
+
+```bash
+curl -X POST http://localhost:8000/retrieve \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <RAG_API_KEY>" \
+  -d '{"query":"османская империя","top_k":15,"min_score":0.45,"collection":"default","return_text":true}'
+```
+
+How to see live RAG logs:
+
+```bash
+docker compose logs -f orchestrator-worker | rg "rag\."
+```
+
+How to confirm RAG is actually used:
+- `diagnostics.json -> .rag`
+- `returnValue.rag.hitCount > 0`
+
 ## RAG integration (FastAPI microservice)
 
 Orchestrator can enrich generation with retrieval results from external RAG service.

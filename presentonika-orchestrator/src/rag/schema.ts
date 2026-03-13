@@ -9,6 +9,7 @@ export const ragRetrieveHitSchema = z.object({
   type: z.string().optional(),
   page: z.number().optional(),
   text: z.string().optional(),
+  metadata: z.record(z.unknown()).optional(),
 });
 
 export const ragRetrieveResponseSchema = z.object({

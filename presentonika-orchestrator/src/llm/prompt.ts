@@ -67,10 +67,10 @@ export const buildUserPrompt = (input: LLMGenerateInput): string => {
   const keysWithRules = input.fillKeys.map((key) => `${key}: ${keyRule(key)}`);
 
   return [
+    buildRagContext(input),
     `topic: ${input.topic || "презентация"}`,
     `language: ${input.language || "ru"}`,
     `keys: ${keysWithRules.join("; ")}`,
-    buildRagContext(input),
     input.strictKeysRequired ? "fills ДОЛЖЕН содержать ВСЕ перечисленные keys." : "fills должен содержать ТОЛЬКО перечисленные keys.",
   ].filter((line) => line.trim().length > 0).join("\n");
 };

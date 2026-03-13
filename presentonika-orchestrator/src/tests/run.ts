@@ -13,6 +13,7 @@ import { runLayoutsImportTests } from "./layoutsImport.test";
 import { runLayoutsMergeTests } from "./layoutsMerge.test";
 import { runLayoutsCompilerTests } from "./layoutsCompiler.test";
 import { runLayoutsWorkerSmokeTests } from "./layoutsWorkerSmoke.test";
+import { runRagRetrieveTests } from "./ragRetrieve.test";
 
 const run = async (): Promise<void> => {
   runPlaceholderTests();
@@ -30,6 +31,7 @@ const run = async (): Promise<void> => {
   await runLayoutsMergeTests();
   await runLayoutsCompilerTests();
   await runLayoutsWorkerSmokeTests();
+  runRagRetrieveTests();
   console.log("tests: ok");
 };
 

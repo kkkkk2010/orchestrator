@@ -24,7 +24,7 @@ import { buildStagedUrl, createStagedFile, deleteStagedRecord } from "./staged/s
 import { HttpRagClient } from "./rag/httpRagClient";
 import { formatQuerySourcesAsCitations, formatRetrieveContext } from "./rag/formatContext";
 import { writeRagArtifacts } from "./rag/writeArtifacts";
-import { buildRagConfigLog, buildRagRequestLog, buildRagResponseLog } from "./rag/logging";
+import { buildRagConfigLog, buildRagErrorLog, buildRagHitsSampleLog, buildRagRequestLog, buildRagResponseLog } from "./rag/logging";
 import { DeepSeekClient } from "./llm/deepseek/DeepSeekClient";
 import { buildSystemPrompt, buildUserPrompt } from "./llm/prompt";
 import { mergeFills } from "./llm/mergeFills";
@@ -266,15 +266,16 @@ const worker = new Worker(
     let ragTmpPath: string | null = null;
     let ragIncluded = false;
     let ragHitCount = 0;
+    let ragUsedContextChars = 0;
+    let ragHttpStatus: number | undefined;
+    let ragElapsedMs = 0;
+    let ragSampleHits: Array<{ score?: number; source_uri?: string; fragment_id?: string }> = [];
     const ragMode = job.data?.rag?.mode === "query" ? "query" : (job.data?.rag?.mode === "retrieve" ? "retrieve" : RAG_MODE_DEFAULT);
     const ragCollection = typeof job.data?.rag?.collection === "string" && job.data.rag.collection.length > 0
       ? job.data.rag.collection
       : RAG_COLLECTION;
     const ragTopK = typeof job.data?.rag?.topK === "number" ? job.data.rag.topK : RAG_TOP_K;
     const ragMinScore = typeof job.data?.rag?.minScore === "number" ? job.data.rag.minScore : RAG_MIN_SCORE;
-    const ragSourceUris = Array.isArray(job.data?.rag?.sourceUris) && job.data.rag.sourceUris.length > 0
-      ? job.data.rag.sourceUris
-      : (RAG_DEFAULT_SOURCE_URIS.length > 0 ? RAG_DEFAULT_SOURCE_URIS : undefined);
     let ragError: string | undefined;
     const ragMiniPrompt = "Сначала используй информацию из приложенных фрагментов. Если фрагментов нет или их не хватает — ответь на основе своих знаний без выдуманных ссылок [n].";
     const ragTimeoutMs = Number.parseInt(process.env.RAG_TIMEOUT_MS || "15000", 10);
@@ -291,7 +292,7 @@ const worker = new Worker(
 
         const ragClient = new HttpRagClient();
         const ragQuery = `тема урока: ${typeof job.data?.topic === "string" ? job.data.topic : ""}`;
-        jobLogger.info(`[JOB ${jobId}] ${buildRagRequestLog({ sourceUrisCount: ragSourceUris?.length || 0, querySnippet: ragQuery.slice(0, 120) })}`);
+        jobLogger.info(`[JOB ${jobId}] ${buildRagRequestLog({ endpoint: ragMode === "retrieve" ? "/retrieve" : "/query", querySnippet: ragQuery.slice(0, 120), topK: ragTopK, minScore: ragMinScore, collection: ragCollection })}`);
         const ragRequestStartedAt = Date.now();
 
         if (ragMode === "query") {
@@ -300,20 +301,24 @@ const worker = new Worker(
             topK: ragTopK,
             minScore: ragMinScore,
             collection: ragCollection,
-            sourceUris: ragSourceUris,
+            sourceUris: RAG_DEFAULT_SOURCE_URIS.length > 0 ? RAG_DEFAULT_SOURCE_URIS : undefined,
           });
 
           ragAnswer = response.answer;
           ragSources = formatQuerySourcesAsCitations(response.sources.slice(0, RAG_MAX_HITS));
           ragHitCount = response.sources.length;
-          jobLogger.info(`[JOB ${jobId}] ${buildRagResponseLog({ ok: true, hitCount: ragHitCount, usedContextChars: ragAnswer?.length || 0, elapsedMs: Date.now() - ragRequestStartedAt, topSourcesSample: response.sources.slice(0, 3).map((source) => source.source_uri) })}`);
+          ragUsedContextChars = ragAnswer?.length || 0;
+          ragElapsedMs = Date.now() - ragRequestStartedAt;
+          ragHttpStatus = response.httpStatus;
+          ragSampleHits = response.sources.slice(0, 3).map((source) => ({ score: source.score, source_uri: source.source_uri, fragment_id: source.fragment_id }));
+          jobLogger.info(`[JOB ${jobId}] ${buildRagResponseLog({ ok: true, httpStatus: ragHttpStatus, hitCount: ragHitCount, usedContextChars: ragUsedContextChars, elapsedMs: ragElapsedMs })}`);
+          jobLogger.info(`[JOB ${jobId}] ${buildRagHitsSampleLog(ragSampleHits)}`);
 
           const artifacts = await writeRagArtifacts({
             jobId,
             mode: "query",
             query: ragQuery,
             collection: ragCollection,
-            sourceUris: ragSourceUris,
             topK: ragTopK,
             minScore: ragMinScore,
             sources: response.sources,
@@ -330,21 +335,32 @@ const worker = new Worker(
             topK: ragTopK,
             minScore: ragMinScore,
             collection: ragCollection,
-            sourceUris: ragSourceUris,
           });
 
           const formatted = formatRetrieveContext(response.hits, RAG_MAX_CONTEXT_CHARS, RAG_MAX_HITS);
-          ragContextText = formatted.contextText;
+          ragContextText = formatted.contextText || response.contextText;
           ragCitations = formatted.citations;
           ragHitCount = response.hits.length;
-          jobLogger.info(`[JOB ${jobId}] ${buildRagResponseLog({ ok: true, hitCount: ragHitCount, usedContextChars: ragContextText?.length || 0, elapsedMs: Date.now() - ragRequestStartedAt, topSourcesSample: response.hits.slice(0, 3).map((hit) => hit.source_uri) })}`);
+          ragUsedContextChars = ragContextText?.length || 0;
+          ragElapsedMs = Date.now() - ragRequestStartedAt;
+          ragHttpStatus = response.httpStatus;
+          ragSampleHits = response.hits.slice(0, 3).map((hit) => ({ score: hit.score, source_uri: hit.source_uri, fragment_id: hit.fragment_id }));
+          if (Array.isArray(response.warnings) && response.warnings.length > 0) {
+            for (const warning of response.warnings.slice(0, 5)) {
+              jobLogger.warn(`[JOB ${jobId}] rag.normalize.warn: ${warning}`);
+            }
+          }
+          jobLogger.info(`[JOB ${jobId}] ${buildRagResponseLog({ ok: true, httpStatus: ragHttpStatus, hitCount: ragHitCount, usedContextChars: ragUsedContextChars, elapsedMs: ragElapsedMs })}`);
+          jobLogger.info(`[JOB ${jobId}] ${buildRagHitsSampleLog(ragSampleHits)}`);
+          if (ragHitCount === 0) {
+            jobLogger.warn(`[JOB ${jobId}] rag: hitCount=0 (continue fail-open)`);
+          }
 
           const artifacts = await writeRagArtifacts({
             jobId,
             mode: "retrieve",
             query: ragQuery,
             collection: ragCollection,
-            sourceUris: ragSourceUris,
             topK: ragTopK,
             minScore: ragMinScore,
             hits: response.hits,
@@ -361,7 +377,9 @@ const worker = new Worker(
         if (RAG_FAIL_ON_ERROR) {
           throw new Error(`RagFailed: ${ragError}`);
         }
-        jobLogger.warn({ err: error }, `[JOB ${jobId}] ${buildRagResponseLog({ ok: false, hitCount: 0, usedContextChars: 0, elapsedMs: Date.now() - ragStartedAt, topSourcesSample: [] })}`);
+        ragElapsedMs = Date.now() - ragStartedAt;
+        jobLogger.warn({ err: error }, `[JOB ${jobId}] ${buildRagResponseLog({ ok: false, hitCount: 0, usedContextChars: 0, elapsedMs: ragElapsedMs })}`);
+        jobLogger.warn({ err: error }, `[JOB ${jobId}] ${buildRagErrorLog(ragError || "unknown")}`);
         jobLogger.warn({ err: error }, "rag retrieval failed, continuing without context");
       } finally {
         mark("rag_retrieve");
@@ -934,6 +952,19 @@ const worker = new Worker(
           bySlide: placeholdersBySlide,
           normalizedCount: normalizedAfterVariants.normalizedCount,
         },
+        rag: {
+          enabled: ragEnabledForJob,
+          mode: ragMode,
+          ok: ragEnabledForJob ? !ragError : false,
+          collection: ragCollection,
+          topK: ragTopK,
+          minScore: ragMinScore,
+          hitCount: ragHitCount,
+          usedContextChars: ragUsedContextChars,
+          elapsedMs: ragElapsedMs,
+          sampleHits: ragSampleHits,
+          error: ragError,
+        },
         imagePlan: {
           ...imagePlanBuild.diagnostics,
           included: imagePlanIncluded,
@@ -1343,16 +1374,10 @@ const worker = new Worker(
         enabled: ragEnabledForJob,
         ok: ragEnabledForJob ? !ragError : false,
         mode: ragMode,
-        topK: ragTopK,
-        minScore: ragMinScore,
         hitCount: ragHitCount,
-        citationCount: ragCitations?.length || ragSources?.length || 0,
-        contextChars: ragContextText?.length || ragAnswer?.length || 0,
-        usedSourceUrisCount: ragSourceUris?.length || 0,
+        usedContextChars: ragUsedContextChars,
+        sampleHits: ragSampleHits,
         error: ragError,
-        timingsMs: ragEnabledForJob ? Date.now() - ragStartedAt : undefined,
-        pathTmp: ragTmpPath ? path.relative(process.cwd(), ragTmpPath) : null,
-        miniPrompt: ragMiniPrompt,
       },
       llm: {
         enabled: llmDiagnostics.enabled,
