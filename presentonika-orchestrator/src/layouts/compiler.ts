@@ -108,7 +108,7 @@ export const compileLayoutPresentation = async (params: {
 
     const imageAt: Record<string, unknown> = {};
     selected.manifest.imageSlots.forEach((slot) => {
-      imageAt[String(slot.elementIndex)] = { slotId: `img_s${row.slide}`, kind: slot.kind || "photo", aspect: slot.aspect || "any" };
+      imageAt[String(slot.elementIndex + 1)] = { slotId: `img_s${row.slide}`, kind: slot.kind || "photo", aspect: slot.aspect || "any" };
     });
     if (Object.keys(imageAt).length > 0) imageAtBySlide[String(row.slide)] = imageAt;
   }

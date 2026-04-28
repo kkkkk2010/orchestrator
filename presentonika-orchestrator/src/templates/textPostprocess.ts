@@ -163,9 +163,9 @@ const toBullets = (text: string): string => {
   const lines = text
     .split("\n")
     .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .map((line) => line.replace(/^\d+[.)]\s*/, "").replace(/^[-•]\s*/, ""))
-      .slice(0, 6)
+    .filter((line) => line.length > 0)
+    .map((line) => line.replace(/^\d+[.)]\s*/, "").replace(/^[-•]\s*/, ""))
+    .slice(0, 6)
     .map((line) => `• ${line}`);
 
   return lines.join("\n");
@@ -181,8 +181,7 @@ export const normalizeText = (key: string, value: string): string => {
   }
 
   if (role === "title") {
-    const words = base.split(/\s+/).filter(Boolean);
-    return words.length <= 9 ? base : `${words.slice(0, 9).join(" ")}…`;
+    return base;
   }
 
   const sentenceLike = base
@@ -236,11 +235,6 @@ export const dedupeBulletLines = (text: string, topic: string, slideType: string
     const currentSet = tokenize(line);
     const nearDuplicate = unique.some((prev) => jaccard(currentSet, tokenize(prev)) > 0.7);
     if (!nearDuplicate) unique.push(line);
-  }
-
-  while (unique.length < 4) {
-    const fallback = generateLocalFallbackBullets(topic, slideType)[unique.length % 3];
-    unique.push(fallback);
   }
 
   return unique.slice(0, 6).join("\n");

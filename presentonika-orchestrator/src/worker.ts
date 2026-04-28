@@ -563,6 +563,7 @@ const worker = new Worker(
             language: typeof job.data?.language === "string" ? job.data.language : null,
             fillKeys: batch.keys,
             imagePlan: batchImagePlanInput,
+            strictKeysRequired: true,
             rag: ragMode === "retrieve"
               ? {
                   mode: "retrieve" as const,
