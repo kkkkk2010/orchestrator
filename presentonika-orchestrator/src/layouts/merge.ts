@@ -5,6 +5,28 @@ type AnyRecord = Record<string, unknown>;
 
 const asRecord = (value: unknown): AnyRecord => (value && typeof value === "object" ? value as AnyRecord : {});
 
+const layoutDebugLabelEnabled = (): boolean => process.env.LAYOUT_DEBUG_LABEL !== "false";
+
+const createLayoutDebugLabel = (layoutId: string): AnyRecord => ({
+  type: "text",
+  name: "layout_debug_label",
+  x: 12,
+  y: 12,
+  width: 420,
+  height: 26,
+  text: `layout: ${layoutId}`,
+  style: {
+    fontFamily: "Times New Roman",
+    fontSize: 13,
+    lineHeight: 1,
+    color: "#6B7280",
+  },
+  meta: {
+    debug: true,
+    layoutId,
+  },
+});
+
 const readZipEntries = async (zipPath: string): Promise<Map<string, Buffer>> => {
   const zipFile = await new Promise<yauzl.ZipFile>((resolve, reject) => {
     yauzl.open(zipPath, { lazyEntries: true }, (error, zf) => (error || !zf ? reject(error ?? new Error("open zip failed")) : resolve(zf)));
@@ -70,8 +92,17 @@ export const mergeLayoutSlides = async (params: {
 
     const slideObj = asRecord(slide);
     slideObj.id = `slide_${row.slide}`;
+    slideObj.background = {
+      type: "image",
+      src: `backgrounds/slide-${row.slide}.png`,
+    };
+
     const elements = Array.isArray(slideObj.elements) ? slideObj.elements : [];
-    slideObj.elements = elements.map((element, index) => {
+    const nextElements = layoutDebugLabelEnabled()
+      ? [...elements, createLayoutDebugLabel(row.layoutId)]
+      : elements;
+
+    slideObj.elements = nextElements.map((element, index) => {
       const el = asRecord(element);
       el.id = `s${row.slide}_e${index + 1}`;
       return el;

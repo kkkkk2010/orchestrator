@@ -27,6 +27,7 @@ LAYOUT_ENGINE_ENABLED=true
 LAYOUT_ENGINE_DIR=layouts-local
 LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT=false
 LAYOUT_ENGINE_VARIATION=true
+LAYOUT_DEBUG_LABEL=true
 ```
 
 Если engine не может собрать раскладку и `FAIL_ON_MISSING_LAYOUT=false`, worker делает `legacy_fallback` на старый template pipeline.
@@ -38,6 +39,9 @@ LAYOUT_ENGINE_VARIATION=true
 ```yaml
 ./layouts-local:/app/layouts-local:ro
 ```
+
+Для тестового прогона `LAYOUT_DEBUG_LABEL=true` добавляет в левый верхний угол каждого слайда подпись вида `layout: edu-cover-a`.
+Выключить можно через `LAYOUT_DEBUG_LABEL=false`.
 
 Для тестового деплоя достаточно распаковать архив с layout pack в корень проекта на VPS так, чтобы появился каталог:
 

@@ -25,6 +25,7 @@ services:
       LAYOUT_ENGINE_DIR: /app/layouts-local
       LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT: "false"
       LAYOUT_ENGINE_VARIATION: "true"
+      LAYOUT_DEBUG_LABEL: "true"
     depends_on:
       redis:
         condition: service_healthy
@@ -53,10 +54,15 @@ services:
         required: false
     environment:
       REDIS_URL: redis://redis:6379
+      FONT_FAMILY_DEFAULT: Times New Roman
+      TYPOGRAPHY_SCALE: "1"
+      TYPOGRAPHY_USE_THEME_SIZES: "false"
+      TEXT_FIT_TRUNCATE: "false"
       LAYOUT_ENGINE_ENABLED: "true"
       LAYOUT_ENGINE_DIR: /app/layouts-local
       LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT: "false"
       LAYOUT_ENGINE_VARIATION: "true"
+      LAYOUT_DEBUG_LABEL: "true"
     depends_on:
       redis:
         condition: service_healthy

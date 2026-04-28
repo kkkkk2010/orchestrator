@@ -57,9 +57,9 @@ const clip = (value: string, max: number): string => {
 };
 
 const parseTypographyScale = (): number => {
-  const raw = Number.parseFloat(process.env.TYPOGRAPHY_SCALE || "1.35");
-  if (!Number.isFinite(raw) || raw <= 0) return 1.35;
-  return Math.min(2.5, Math.max(0.6, raw));
+  const raw = Number.parseFloat(process.env.TYPOGRAPHY_SCALE || "1");
+  if (!Number.isFinite(raw) || raw <= 0) return 1;
+  return Math.min(1.5, Math.max(0.75, raw));
 };
 
 const guessKind = (key: string): TextKind => {
@@ -87,8 +87,8 @@ const defaultTypography = (themeId: string): TypographyConfig => {
     return {
       fontFamily: process.env.FONT_FAMILY_DEFAULT || "Times New Roman",
       scale: parseTypographyScale(),
-      sizes: { title: 60, subtitle: 38, body: 30, small: 23, muted: 23, bullets: 30 },
-      lineHeights: { title: 1.04, subtitle: 1.1, body: 1.16, small: 1.13, muted: 1.13, bullets: 1.16 },
+      sizes: { title: 48, subtitle: 30, body: 24, small: 16, muted: 16, bullets: 22 },
+      lineHeights: { title: 1.06, subtitle: 1.12, body: 1.22, small: 1.15, muted: 1.15, bullets: 1.18 },
       colors: { title: "#FFFFFF", body: "#F2F2F2", muted: "#CFCFCF" },
       mode: "dark",
     };
@@ -98,8 +98,8 @@ const defaultTypography = (themeId: string): TypographyConfig => {
   return {
     fontFamily: process.env.FONT_FAMILY_DEFAULT || "Times New Roman",
     scale: parseTypographyScale(),
-    sizes: { title: 60, subtitle: 38, body: 30, small: 23, muted: 23, bullets: 30 },
-    lineHeights: { title: 1.04, subtitle: 1.1, body: 1.16, small: 1.13, muted: 1.13, bullets: 1.16 },
+    sizes: { title: 48, subtitle: 30, body: 24, small: 16, muted: 16, bullets: 22 },
+    lineHeights: { title: 1.06, subtitle: 1.12, body: 1.22, small: 1.15, muted: 1.15, bullets: 1.18 },
     colors: isLight
       ? { title: "#111111", body: "#222222", muted: "#555555" }
       : { title: "#111111", body: "#111111", muted: "#444444" },
@@ -113,9 +113,11 @@ export const resolveThemeTypography = (themeId: string, theme: unknown): Typogra
   const sizes = toRecord(typography?.sizes);
   const lineHeights = toRecord(typography?.lineHeights);
   const colors = toRecord(typography?.colors);
+  const useThemeSizes = process.env.TYPOGRAPHY_USE_THEME_SIZES === "true";
+  const forcedFontFamily = (process.env.FONT_FAMILY_DEFAULT || "Times New Roman").trim() || "Times New Roman";
 
-  const readSize = (role: StyleRole): number => readNum(sizes?.[role]) ?? base.sizes[role];
-  const readLineHeight = (role: StyleRole): number => readNum(lineHeights?.[role]) ?? base.lineHeights[role];
+  const readSize = (role: StyleRole): number => useThemeSizes ? (readNum(sizes?.[role]) ?? base.sizes[role]) : base.sizes[role];
+  const readLineHeight = (role: StyleRole): number => useThemeSizes ? (readNum(lineHeights?.[role]) ?? base.lineHeights[role]) : base.lineHeights[role];
 
   const scale = parseTypographyScale();
   const applyScale = (value: number): number => Math.max(10, Math.round(value * scale));
@@ -123,9 +125,7 @@ export const resolveThemeTypography = (themeId: string, theme: unknown): Typogra
   return {
     ...base,
     scale,
-    fontFamily: typeof typography?.fontFamily === "string" && typography.fontFamily.trim().length > 0
-      ? typography.fontFamily
-      : base.fontFamily,
+    fontFamily: forcedFontFamily,
     sizes: {
       title: applyScale(readSize("title")),
       subtitle: applyScale(readSize("subtitle")),
@@ -163,10 +163,10 @@ const toBullets = (text: string): string => {
   const lines = text
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .map((line) => line.replace(/^\d+[.)]\s*/, "").replace(/^[-•]\s*/, ""))
-    .slice(0, 6)
-    .map((line) => `• ${clip(line, 80)}`);
+      .filter((line) => line.length > 0)
+      .map((line) => line.replace(/^\d+[.)]\s*/, "").replace(/^[-•]\s*/, ""))
+      .slice(0, 6)
+    .map((line) => `• ${line}`);
 
   return lines.join("\n");
 };
@@ -188,9 +188,9 @@ export const normalizeText = (key: string, value: string): string => {
   const sentenceLike = base
     .split(/(?<=[.!?])\s+/)
     .filter((part) => part.trim().length > 0)
-    .slice(0, 2)
+    .slice(0, role === "subtitle" || role === "muted" || role === "small" ? 2 : 3)
     .join(" ");
-  return clip(sentenceLike || base, role === "body" ? 240 : 180);
+  return sentenceLike || base;
 };
 
 export const generateLocalFallbackBullets = (topic: string, slideType: string): string[] => {
@@ -248,7 +248,9 @@ export const dedupeBulletLines = (text: string, topic: string, slideType: string
 
 const applyTextProps = (record: Record<string, unknown>, props: { fontFamily: string; fontSize: number; lineHeight: number; color: string }): number => {
   let touched = 0;
-  const styleTargets = [record, toRecord(record.style), toRecord(record.textStyle), toRecord(record.paragraphStyle)].filter(Boolean) as Record<string, unknown>[];
+  const style = toRecord(record.style) ?? {};
+  record.style = style;
+  const styleTargets = [record, style, toRecord(record.textStyle), toRecord(record.paragraphStyle)].filter(Boolean) as Record<string, unknown>[];
 
   for (const target of styleTargets) {
     if (target.fontFamily !== props.fontFamily) {
@@ -354,9 +356,7 @@ export const autoFitText = (params: {
 
     const role = styleRoleByKey(target.key);
     const baseFontSize = params.themeTypography.sizes[role];
-    const minTitle = Math.round(32 * params.themeTypography.scale);
-    const minBody = Math.round(19 * params.themeTypography.scale);
-    const minFontSize = role === "title" ? minTitle : minBody;
+    const minFontSize = role === "title" ? 30 : (role === "subtitle" ? 20 : 13);
     const maxFontSize = baseFontSize;
 
     const text = typeof element.text === "string" ? element.text.trim() : "";
@@ -379,11 +379,13 @@ export const autoFitText = (params: {
 
     let nextText = text;
     let wasTruncated = false;
-    if (nextText.length > maxCharsEst) {
+    if (nextText.length > maxCharsEst && process.env.TEXT_FIT_TRUNCATE === "true") {
       overflowCount += 1;
       truncatedCount += 1;
       wasTruncated = true;
       nextText = clip(nextText, maxCharsEst);
+    } else if (nextText.length > maxCharsEst) {
+      overflowCount += 1;
     }
 
     if (typeof element.text === "string") element.text = nextText;
