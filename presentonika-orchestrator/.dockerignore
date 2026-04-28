@@ -3,6 +3,7 @@ dist
 out
 .tmp
 .staged
+layouts-local
 .git
 .gitignore
 npm-debug.log*

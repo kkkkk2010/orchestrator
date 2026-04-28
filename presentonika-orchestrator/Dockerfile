@@ -22,7 +22,7 @@ RUN npm install --omit=dev
 COPY --from=build /app/dist ./dist
 COPY themes ./themes
 
-RUN mkdir -p /app/out /app/.tmp /app/.staged
+RUN mkdir -p /app/out /app/.tmp /app/.staged /app/layouts-local
 EXPOSE 8080
 
 CMD ["node", "dist/server.js"]

@@ -1,5 +1,86 @@
 services:
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  orchestrator-api:
+    build: .
+    restart: unless-stopped
+    command: ["node", "dist/server.js"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      REDIS_URL: redis://redis:6379
+      QUEUE_NAME: ${QUEUE_NAME:-presentonika_jobs}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PRESENTONIKA_ORCHESTRATOR_KEY: ${PRESENTONIKA_ORCHESTRATOR_KEY:-strong-secret-token}
+      ORCHESTRATOR_PUBLIC_KEY: ${ORCHESTRATOR_PUBLIC_KEY:-change-me-long-random-string}
+      PUBLIC_ZIP_BASE_URL: ${PUBLIC_ZIP_BASE_URL:-http://localhost:8080}
+      STAGED_DIR: .staged
+      STAGED_ENABLE_SERVER: ${STAGED_ENABLE_SERVER:-true}
+      LAYOUT_ENGINE_ENABLED: "true"
+      LAYOUT_ENGINE_DIR: /app/layouts-local
+      LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT: ${LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT:-false}
+      LAYOUT_ENGINE_VARIATION: ${LAYOUT_ENGINE_VARIATION:-true}
+    volumes:
+      - ./out:/app/out
+      - ./.tmp:/app/.tmp
+      - ./.staged:/app/.staged
+      - ./themes:/app/themes:ro
+      - ./layouts-local:/app/layouts-local:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  orchestrator-worker:
+    build: .
+    restart: unless-stopped
+    command: ["node", "dist/worker.js"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+      QUEUE_NAME: ${QUEUE_NAME:-presentonika_jobs}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      PUBLIC_ZIP_BASE_URL: ${PUBLIC_ZIP_BASE_URL:-http://localhost:8080}
+      STAGED_DIR: .staged
+      STAGED_ENABLE_SERVER: ${STAGED_ENABLE_SERVER:-true}
+      WP_UPLOAD_ENABLED: ${WP_UPLOAD_ENABLED:-true}
+      WP_FAIL_ON_UPLOAD_ERROR: ${WP_FAIL_ON_UPLOAD_ERROR:-true}
+      WP_SAVE_MODE: ${WP_SAVE_MODE:-from_url}
+      LLM_ENABLED: ${LLM_ENABLED:-false}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      IMAGEPLAN_AUTO_DETECT: ${IMAGEPLAN_AUTO_DETECT:-true}
+      IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR: ${IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR:-true}
+      LAYOUT_ENGINE_ENABLED: "true"
+      LAYOUT_ENGINE_DIR: /app/layouts-local
+      LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT: ${LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT:-false}
+      LAYOUT_ENGINE_VARIATION: ${LAYOUT_ENGINE_VARIATION:-true}
+    volumes:
+      - ./out:/app/out
+      - ./.tmp:/app/.tmp
+      - ./.staged:/app/.staged
+      - ./themes:/app/themes:ro
+      - ./layouts-local:/app/layouts-local:ro
+
+volumes:
+  redis_data:

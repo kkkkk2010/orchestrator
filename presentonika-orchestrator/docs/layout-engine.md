@@ -31,6 +31,35 @@ LAYOUT_ENGINE_VARIATION=true
 
 Если engine не может собрать раскладку и `FAIL_ON_MISSING_LAYOUT=false`, worker делает `legacy_fallback` на старый template pipeline.
 
+## Docker/VPS
+
+`docker-compose.yml` и `docker-compose.prod.yml` уже включают layout engine и монтируют внешний каталог:
+
+```yaml
+./layouts-local:/app/layouts-local:ro
+```
+
+Для тестового деплоя достаточно распаковать архив с layout pack в корень проекта на VPS так, чтобы появился каталог:
+
+```bash
+layouts-local/<layoutId>/layout.json
+layouts-local/<layoutId>/layout.out.zip
+```
+
+После этого можно пересобрать и поднять сервисы:
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+В production compose используется тот же mount; если запускаете его явно, команда такая:
+
+```bash
+docker compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml up -d
+```
+
 ## Импорт нового layout
 
 1. Сделайте 1-slide layout в редакторе и экспортируйте `out.zip`.
