@@ -17,11 +17,13 @@ import { runRagRetrieveTests } from "./ragRetrieve.test";
 import { runThemeStoreTests } from "./themeStore.test";
 import { runContentQaTests } from "./contentQa.test";
 import { runPlanImageReplacementsTests } from "./planImageReplacements.test";
+import { runNarrativePlanTests } from "./narrativePlan.test";
 
 const run = async (): Promise<void> => {
   runPlaceholderTests();
   runThemeStoreTests();
   runContentQaTests();
+  runNarrativePlanTests();
   runImagePlanTests();
   await runPlanImageReplacementsTests();
   runLlmParsingTests();

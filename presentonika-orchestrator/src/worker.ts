@@ -33,6 +33,7 @@ import { calcLlmRetryDelayMs, isRetryableLlmError } from "./llm/retry";
 import { applyTypographyStandards, autoFitText, dedupeBulletLines, generateLocalFallback, generateLocalFallbackBullets, normalizeText, resolveThemeTypography, styleRoleByKey } from "./templates/textPostprocess";
 import { compileLayoutPresentation } from "./layouts";
 import { runContentQa } from "./content/contentQa";
+import { buildNarrativePlan, sourceFallbackForTopic } from "./content/narrativePlan";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
@@ -464,6 +465,12 @@ const worker = new Worker(
     const normalizedAfterVariants = normalizePlaceholders(doc);
     const placeholderScan = extractPlaceholderLocations(doc);
     const fillKeys = [...new Set(placeholderScan.locations.map((item) => item.key))];
+    const topic = typeof job.data?.topic === "string" ? job.data.topic : "";
+    const language = typeof job.data?.language === "string" ? job.data.language : null;
+    const narrativePlan = buildNarrativePlan({
+      topic,
+      selectedLayouts: layoutEngineDiagnostics.selectedLayouts,
+    });
     const placeholdersBySlide = placeholderScan.locations.reduce<Record<string, { count: number; keys: string[] }>>((acc, location) => {
       const slideKey = String(location.slide);
       if (!acc[slideKey]) {
@@ -574,19 +581,20 @@ const worker = new Worker(
               doc,
               presentationId,
               themeId,
-              topic: typeof job.data?.topic === "string" ? job.data.topic : "",
-              language: typeof job.data?.language === "string" ? job.data.language : null,
+              topic,
+              language,
             }),
           };
 
           const batchPromptInput = {
             presentationId,
             themeId,
-            topic: typeof job.data?.topic === "string" ? job.data.topic : "",
-            language: typeof job.data?.language === "string" ? job.data.language : null,
+            topic,
+            language,
             fillKeys: batch.keys,
             imagePlan: batchImagePlanInput,
             strictKeysRequired: true,
+            narrativePlan,
             layoutContext: layoutEngineDiagnostics.selectedLayouts
               .filter((row) => !batch.slide || row.slide === batch.slide)
               .map((row) => ({
@@ -715,8 +723,6 @@ const worker = new Worker(
 
     const generatedFills = mergeFills(fillKeys, llmFills, "TEST_");
     const fills = { ...generatedFills, ...debugFills };
-    const topic = typeof job.data?.topic === "string" ? job.data.topic : "";
-    const language = typeof job.data?.language === "string" ? job.data.language : null;
 
     for (const key of Object.keys(fills)) {
       fills[key] = normalizeText(key, fills[key]);
@@ -743,7 +749,7 @@ const worker = new Worker(
 
       if (key.endsWith("_sources") || key.includes("sources")) {
         if (!ragEnabledForJob || ragHitCount === 0) {
-          fills[key] = "Источники: учебник, энциклопедии, официальные документы, проверенные обзоры.";
+          fills[key] = sourceFallbackForTopic(topic, narrativePlan.topicKind);
         } else {
           const sourceUris = (ragSources || ragCitations || []).map((item) => item.source_uri).filter((uri): uri is string => typeof uri === "string").slice(0, 5);
           fills[key] = sourceUris.length > 0 ? `Источники: ${sourceUris.join("; ")}` : fills[key];
@@ -794,6 +800,7 @@ const worker = new Worker(
             imagePlan: buildImagePlanFromMap({ map, doc, presentationId, themeId, topic, language }),
             mode: "targeted_fills",
             strictKeysRequired: true,
+            narrativePlan,
             layoutContext: layoutEngineDiagnostics.selectedLayouts
               .filter((row) => keys.some((key) => key.startsWith(`s${row.slide}_`)))
               .map((row) => ({
@@ -851,6 +858,7 @@ const worker = new Worker(
       fills,
       fillKeys,
       topic,
+      narrativePlan,
     });
     jobLogger.info(
       {
@@ -1031,6 +1039,7 @@ const worker = new Worker(
             : "No final slots resolved. Check imageAt bindings or auto-detect settings.",
         },
         layoutEngine: layoutEngineDiagnostics,
+        narrativePlan,
         llm: llmDiagnostics,
         fills: {
           fillKeysCount: fillKeys.length,
@@ -1454,6 +1463,7 @@ const worker = new Worker(
         backgroundsMissing: backgroundsMissingCapped,
         ragIncluded,
       },
+      narrativePlan,
       contentQuality,
       rag: {
         enabled: ragEnabledForJob,

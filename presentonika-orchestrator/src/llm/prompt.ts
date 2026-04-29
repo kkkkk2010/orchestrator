@@ -96,12 +96,37 @@ const deterministicDeckContext = (input: LLMGenerateInput): string => {
     .map((row) => `slide ${row.slide}: type=${row.slideType}, layoutId=${row.layoutId}, role=${row.role}, density=${row.textDensity}`)
     .join("; ");
 
+  const narrative = input.narrativePlan;
+  const currentSlides = new Set((input.layoutContext || [])
+    .map((row) => row.slide)
+    .concat(input.fillKeys.map((key) => Number.parseInt(key.match(/^s(\d+)_/i)?.[1] || "", 10)).filter(Number.isFinite)));
+  const slidePlan = narrative?.slides
+    .map((slide) => `${slide.slide}. ${slide.purpose}: ${slide.focus}`)
+    .join("; ");
+  const currentPlan = narrative?.slides
+    .filter((slide) => currentSlides.size === 0 || currentSlides.has(slide.slide))
+    .map((slide) => [
+      `current slide ${slide.slide}: purpose=${slide.purpose}; function=${slide.functionLabel}; focus=${slide.focus}`,
+      slide.relationToPrevious ? `previous=${slide.relationToPrevious}` : "",
+      slide.relationToNext ? `next=${slide.relationToNext}` : "",
+    ].filter(Boolean).join("; "))
+    .join("\n");
+
   return [
     "Deck architecture: 10-slide teacher deck = cover, goals/plan, hook, context, facts, comparison, timeline/steps, examples, quiz, summary.",
+    narrative ? `centralQuestion: ${narrative.centralQuestion}` : "",
+    narrative ? `thesis: ${narrative.thesis}` : "",
+    slidePlan ? `slide-by-slide narrativePlan: ${slidePlan}` : "",
+    currentPlan ? `current batch narrative relation:\n${currentPlan}` : "",
     rows ? `Selected layouts: ${rows}` : "",
     "Use the selected slide role and text density when filling blocks. Bigger text blocks need explanation, not 2-3 dry fragments.",
     "For each factual bullet prefer: fact + meaning/consequence. If exact numbers are uncertain, do not invent precise quantities.",
     "Avoid generic headings: Определение и термины; Ключевые факты; Основные понятия; <topic>: определение.",
+    "Treat the deck as one coherent lesson, not independent slides.",
+    "Each slide must advance the central argument; do not restate the same central claim on every slide.",
+    "Slide 2 defines the route; later slides must follow it. Slide 3 opens the problem; slides 4-8 develop it. Slide 10 answers the centralQuestion.",
+    "Examples must support the thesis, not just list works/facts. Quiz questions must test the argument and sequence, not isolated trivia.",
+    narrative ? `antiRepetitionRules: ${narrative.antiRepetitionRules.join(" | ")}` : "",
   ].filter(Boolean).join("\n");
 };
 
