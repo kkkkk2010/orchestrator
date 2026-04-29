@@ -18,7 +18,7 @@ type VariantRule = {
 
 type SlideRule = {
   variants?: Record<string, VariantRule>;
-  imageAt?: Record<string, string>;
+  imageAt?: Record<string, unknown>;
   choose?: unknown;
 };
 

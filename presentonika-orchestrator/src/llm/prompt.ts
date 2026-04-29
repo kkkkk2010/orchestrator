@@ -35,20 +35,20 @@ const keyRule = (key: string): string => {
   const normalized = key.toLowerCase();
   if (normalized === "s1_title") return "название темы, <=5 слов";
   if (normalized === "s1_subtitle") return "сильный подзаголовок, <=7 слов, не повторяй title";
-  if (normalized === "s1_meta") return "1 фактическая строка-описание, <=22 слов";
+  if (normalized === "s1_meta") return "1 смысловая рамка темы: что изучаем и почему это важно, 16-24 слова";
   if (normalized === "s2_title") return "заголовок целей, <=5 слов";
-  if (normalized === "s2_goals") return "ровно 3 учебные цели, каждая строка с •, конкретно по теме";
-  if (normalized === "s2_plan") return "ровно 3 пункта плана урока, каждая строка с •, без нумерации";
+  if (normalized === "s2_goals") return "ровно 3 учебные цели, каждая строка с •; не обещай разбор конкретных произведений/глав, если deck дальше их не раскрывает";
+  if (normalized === "s2_plan") return "ровно 3 пункта плана урока, каждая строка с •, без нумерации; план должен совпадать со структурой 10 слайдов";
   if (normalized === "s3_title") return "цепляющий заголовок, <=7 слов";
   if (normalized === "s3_hook_question") return "1 интригующий вопрос";
   if (normalized === "s3_hook_hint") return "1 короткая подсказка/ответ";
   if (normalized === "s3_hook_fact") return "1 точный факт с датой/масштабом";
   if (normalized === "s3_hook_why") return "1 фраза почему это важно";
-  if (normalized === "s4_title") return "заголовок определения, <=5 слов";
-  if (normalized === "s4_definition") return "одно точное определение, 18-28 слов";
-  if (normalized === "s4_keywords") return "5-7 ключевых терминов через запятую";
-  if (normalized === "s5_title") return "заголовок фактов, <=5 слов";
-  if (normalized === "s5_bullets") return "ровно 5 фактических пунктов, каждая строка с •";
+  if (normalized === "s4_title") return "смысловой заголовок роли/контекста, <=5 слов; избегай 'Определение и термины'";
+  if (normalized === "s4_definition") return "объясни роль, значение или контекст темы, 24-38 слов; для человека не пиши как словарную статью";
+  if (normalized === "s4_keywords") return "5-7 терминов с короткими пояснениями, через точки с запятой; не просто список слов через запятую";
+  if (normalized === "s5_title") return "заголовок смысловых фактов, <=5 слов; избегай 'Ключевые факты'";
+  if (normalized === "s5_bullets") return "ровно 5 пунктов, каждая строка с •; в каждом пункте факт + почему он важен, 12-22 слова";
   if (normalized === "s6_title") return "заголовок сравнения, <=5 слов";
   if (normalized.includes("left_title")) return "название левой колонки, <=4 слов";
   if (normalized.includes("right_title")) return "название правой колонки, <=4 слов";
@@ -56,12 +56,12 @@ const keyRule = (key: string): string => {
   if (normalized === "s7_title") return "заголовок этапов, <=5 слов";
   if (/s7_step\d+/.test(normalized)) return "1 этап: дата/период + событие + значение, <=18 слов";
   if (normalized === "s8_title") return "заголовок примеров, <=5 слов";
-  if (normalized === "s8_examples") return "ровно 4 конкретных примера, каждая строка с •";
+  if (normalized === "s8_examples") return "ровно 4 конкретных примера, каждая строка с •; пример + что он показывает";
   if (normalized === "s9_title") return "заголовок проверки, <=5 слов";
   if (normalized === "s9_task") return "короткая инструкция к заданию";
   if (/s9_q\d+/.test(normalized)) return "1 проверочный вопрос по теме";
   if (normalized === "s10_title") return "заголовок итога, <=5 слов";
-  if (normalized === "s10_summary") return "3 вывода, каждая строка с •";
+  if (normalized === "s10_summary") return "3 вывода, каждая строка с •; каждый вывод объясняет значение, не повторяет факты";
   if (normalized === "s10_homework") return "1 домашнее задание, практическое";
   if (normalized === "s10_sources") return "1 строка источников";
   if (normalized.includes("title")) return "<=7 слов";
@@ -78,10 +78,10 @@ const slideContext = (keys: string[]): string => {
 
   switch (slide) {
     case "1": return "slide 1 = обложка: тема, подзаголовок, одна вводная фраза.";
-    case "2": return "slide 2 = цели и план: не повторяй generic-фразы, дай конкретные цели и этапы урока.";
+    case "2": return "slide 2 = цели и план: обещай только то, что реально раскрывается на следующих слайдах.";
     case "3": return "slide 3 = hook: заинтересуй вопросом, фактом и значимостью.";
-    case "4": return "slide 4 = определение: дай точное определение и термины.";
-    case "5": return "slide 5 = ключевые факты: только конкретные факты.";
+    case "4": return "slide 4 = контекст/значение: объясни роль темы, а не словарное определение.";
+    case "5": return "slide 5 = смысловые факты: каждый факт должен объяснять значение или последствие.";
     case "6": return "slide 6 = сравнение двух сторон/периодов/явлений.";
     case "7": return "slide 7 = последовательность этапов.";
     case "8": return "slide 8 = примеры.";
@@ -89,6 +89,20 @@ const slideContext = (keys: string[]): string => {
     case "10": return "slide 10 = итог, домашнее задание, источники.";
     default: return "";
   }
+};
+
+const deterministicDeckContext = (input: LLMGenerateInput): string => {
+  const rows = (input.layoutContext || [])
+    .map((row) => `slide ${row.slide}: type=${row.slideType}, layoutId=${row.layoutId}, role=${row.role}, density=${row.textDensity}`)
+    .join("; ");
+
+  return [
+    "Deck architecture: 10-slide teacher deck = cover, goals/plan, hook, context, facts, comparison, timeline/steps, examples, quiz, summary.",
+    rows ? `Selected layouts: ${rows}` : "",
+    "Use the selected slide role and text density when filling blocks. Bigger text blocks need explanation, not 2-3 dry fragments.",
+    "For each factual bullet prefer: fact + meaning/consequence. If exact numbers are uncertain, do not invent precise quantities.",
+    "Avoid generic headings: Определение и термины; Ключевые факты; Основные понятия; <topic>: определение.",
+  ].filter(Boolean).join("\n");
 };
 
 const buildImagePromptsUserPrompt = (input: LLMGenerateInput): string => {
@@ -122,6 +136,7 @@ export const buildUserPrompt = (input: LLMGenerateInput): string => {
     buildRagContext(input),
     `topic: ${input.topic || "презентация"}`,
     `language: ${input.language || "ru"}`,
+    deterministicDeckContext(input),
     slideContext(input.fillKeys),
     "Пиши содержательно и фактологично. Запрещены generic-фразы вроде: ключевой термин и его значение; короткий вывод; главная мысль по теме.",
     "Не смешивай несколько пунктов в одной строке. Не используй нумерацию внутри строк.",

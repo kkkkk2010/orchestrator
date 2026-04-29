@@ -11,6 +11,13 @@ export type LLMGenerateInput = {
   chosenVariantsPreview?: Record<string, string>;
   mode?: "fills" | "targeted_fills" | "image_prompts";
   strictKeysRequired?: boolean;
+  layoutContext?: Array<{
+    slide: number;
+    slideType: string;
+    layoutId: string;
+    role: string;
+    textDensity: "low" | "medium" | "high";
+  }>;
   imagePromptsInput?: Array<{
     slotId: string;
     slide: number;

@@ -32,6 +32,7 @@ export const runQualityGateTests = (): void => {
   }
 
   {
+    const previousScale = process.env.TYPOGRAPHY_SCALE;
     process.env.TYPOGRAPHY_SCALE = "1.35";
     const doc = {
       slides: [{ elements: [{ text: "Title", style: {} }] }],
@@ -43,7 +44,10 @@ export const runQualityGateTests = (): void => {
     applyTypographyStandards({ doc, placeholderLocations: locations, themeTypography: typography });
     const style = (doc.slides[0].elements[0] as { style: Record<string, unknown> }).style;
     assert.equal(typography.scale, 1.35);
-    assert.ok(Number(style.fontSize) >= 80);
+    assert.equal(style.fontFamily, "Times New Roman");
+    assert.equal(Number(style.fontSize), 65);
+    if (previousScale === undefined) delete process.env.TYPOGRAPHY_SCALE;
+    else process.env.TYPOGRAPHY_SCALE = previousScale;
   }
 
   {

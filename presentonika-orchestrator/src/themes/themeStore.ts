@@ -16,11 +16,28 @@ const resolveThemesDir = (): string => {
 };
 
 const THEMES_DIR = resolveThemesDir();
+const THEME_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
 export const getThemesRootDir = (): string => path.resolve(THEMES_DIR);
 
+export const assertSafeThemeId = (themeId: string): string => {
+  const safeThemeId = themeId.trim();
+  if (!safeThemeId || !THEME_ID_RE.test(safeThemeId)) {
+    throw new Error(`ThemeIdInvalid: unsafe themeId "${themeId}"`);
+  }
+  return safeThemeId;
+};
+
 export const getThemeDir = (themeId: string): string => {
-  return path.resolve(getThemesRootDir(), themeId);
+  const root = getThemesRootDir();
+  const themeDir = path.resolve(root, assertSafeThemeId(themeId));
+  const relative = path.relative(root, themeDir);
+
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`ThemeIdInvalid: theme path escapes themes root "${themeId}"`);
+  }
+
+  return themeDir;
 };
 
 export const getThemeTemplateZipPath = (themeId: string): string => {

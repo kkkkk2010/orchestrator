@@ -33,4 +33,10 @@ export const runLayoutsMergeTests = async (): Promise<void> => {
 
   assert.ok(Object.keys(merged.extraEntries).some((name) => name.includes("assets/layouts/a/slide-1/assets/images/shared.png")));
   assert.ok(Object.keys(merged.extraEntries).some((name) => name.includes("assets/layouts/b/slide-2/assets/images/shared.png")));
+
+  const slides = (merged.doc as { slides: Array<{ background?: { src?: string }; elements: Array<{ name?: string; src?: string }> }> }).slides;
+  assert.equal(slides[0].background?.src, "backgrounds/slide-1.png");
+  assert.equal(slides[1].background?.src, "backgrounds/slide-2.png");
+  assert.equal(slides[0].elements.some((element) => element.name === "theme_background" || element.src === "backgrounds/slide-1.png"), false);
+  assert.equal(slides[0].elements[0].src?.includes("assets/layouts/a/slide-1/assets/images/shared.png"), true);
 };

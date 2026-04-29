@@ -14,10 +14,16 @@ import { runLayoutsMergeTests } from "./layoutsMerge.test";
 import { runLayoutsCompilerTests } from "./layoutsCompiler.test";
 import { runLayoutsWorkerSmokeTests } from "./layoutsWorkerSmoke.test";
 import { runRagRetrieveTests } from "./ragRetrieve.test";
+import { runThemeStoreTests } from "./themeStore.test";
+import { runContentQaTests } from "./contentQa.test";
+import { runPlanImageReplacementsTests } from "./planImageReplacements.test";
 
 const run = async (): Promise<void> => {
   runPlaceholderTests();
+  runThemeStoreTests();
+  runContentQaTests();
   runImagePlanTests();
+  await runPlanImageReplacementsTests();
   runLlmParsingTests();
   runLlmBatchingTests();
   runQualityGateTests();

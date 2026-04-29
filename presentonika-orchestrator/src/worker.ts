@@ -32,6 +32,7 @@ import { aggregateFillCounts, buildBatches } from "./llm/batching";
 import { calcLlmRetryDelayMs, isRetryableLlmError } from "./llm/retry";
 import { applyTypographyStandards, autoFitText, dedupeBulletLines, generateLocalFallback, generateLocalFallbackBullets, normalizeText, resolveThemeTypography, styleRoleByKey } from "./templates/textPostprocess";
 import { compileLayoutPresentation } from "./layouts";
+import { runContentQa } from "./content/contentQa";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
@@ -78,6 +79,28 @@ const LLM_RETRY_BASE_DELAY_MS = Number.parseInt(process.env.LLM_RETRY_BASE_DELAY
 const LLM_RETRY_MAX_DELAY_MS = Number.parseInt(process.env.LLM_RETRY_MAX_DELAY_MS || "5000", 10);
 const LLM_RETRY_ON_ABORT = process.env.LLM_RETRY_ON_ABORT !== "false";
 const FAIL_ON_REMAINING_TOKENS = process.env.FAIL_ON_REMAINING_TOKENS === "true";
+
+const slideRole = (slideType: string): string => {
+  switch (slideType) {
+    case "cover": return "frame the topic and why it matters";
+    case "goals": return "set goals and a realistic lesson path";
+    case "hook": return "create curiosity with question, hint, fact, meaning";
+    case "definition": return "explain context, role, and key terms";
+    case "bullets": return "teach facts with meaning and consequences";
+    case "twoCol": return "compare two sides, periods, or ideas";
+    case "steps": return "show sequence and significance of stages";
+    case "examples": return "give examples and what they demonstrate";
+    case "quiz": return "check understanding";
+    case "summary": return "summarize takeaways and next action";
+    default: return "fill the selected slide coherently";
+  }
+};
+
+const slideDensity = (slideType: string): "low" | "medium" | "high" => {
+  if (slideType === "cover" || slideType === "quiz") return "low";
+  if (slideType === "bullets" || slideType === "examples" || slideType === "summary") return "high";
+  return "medium";
+};
 const DEDUP_ENABLED = process.env.DEDUP_ENABLED !== "false";
 
 const MAX_SLIDES = parseInt(process.env.MAX_SLIDES || "30", 10);
@@ -564,6 +587,15 @@ const worker = new Worker(
             fillKeys: batch.keys,
             imagePlan: batchImagePlanInput,
             strictKeysRequired: true,
+            layoutContext: layoutEngineDiagnostics.selectedLayouts
+              .filter((row) => !batch.slide || row.slide === batch.slide)
+              .map((row) => ({
+                slide: row.slide,
+                slideType: row.slideType,
+                layoutId: row.layoutId,
+                role: slideRole(row.slideType),
+                textDensity: slideDensity(row.slideType),
+              })),
             rag: ragMode === "retrieve"
               ? {
                   mode: "retrieve" as const,
@@ -762,6 +794,15 @@ const worker = new Worker(
             imagePlan: buildImagePlanFromMap({ map, doc, presentationId, themeId, topic, language }),
             mode: "targeted_fills",
             strictKeysRequired: true,
+            layoutContext: layoutEngineDiagnostics.selectedLayouts
+              .filter((row) => keys.some((key) => key.startsWith(`s${row.slide}_`)))
+              .map((row) => ({
+                slide: row.slide,
+                slideType: row.slideType,
+                layoutId: row.layoutId,
+                role: slideRole(row.slideType),
+                textDensity: slideDensity(row.slideType),
+              })),
           });
           for (const [key, value] of Object.entries(response.fills)) {
             fills[key] = normalizeText(key, value);
@@ -805,6 +846,20 @@ const worker = new Worker(
         throw new Error("RemainingTokensAfterQualityGate");
       }
     }
+
+    const contentQuality = runContentQa({
+      fills,
+      fillKeys,
+      topic,
+    });
+    jobLogger.info(
+      {
+        score: contentQuality.score,
+        issueCount: contentQuality.issues.length,
+        stats: contentQuality.stats,
+      },
+      "content qa completed"
+    );
 
     const theme = await readThemeSafe(themeId);
     const themeTypography = resolveThemeTypography(themeId, theme);
@@ -1002,6 +1057,7 @@ const worker = new Worker(
           sizes: themeTypography.sizes,
         },
         textFit: textFitStats,
+        contentQuality,
         imagePrompts: imagePromptsDiagnostics,
         stats: {
           slides: slideCount,
@@ -1282,36 +1338,61 @@ const worker = new Worker(
       jobLogger.info({ stage: "upload_to_wp" }, "progress updated");
 
       if (WP_UPLOAD_ENABLED) {
-        const uploadResult = await uploadOutzip({
-          endpoint: job.data.save.endpoint,
-          presentationId: job.data.save.presentationId,
-          saveToken: job.data.save.saveToken,
-          zipPath: outZipPath,
-          timeoutMs: WP_UPLOAD_TIMEOUT_MS,
-        });
+        try {
+          const uploadResult = await uploadOutzip({
+            endpoint: job.data.save.endpoint,
+            presentationId: job.data.save.presentationId,
+            saveToken: job.data.save.saveToken,
+            zipPath: outZipPath,
+            timeoutMs: WP_UPLOAD_TIMEOUT_MS,
+          });
 
-        mark("upload_to_wp");
+          mark("upload_to_wp");
 
-        upload = {
-          attempted: true,
-          mode: "upload",
-          ok: uploadResult.ok,
-          status: uploadResult.status,
-          outZipUrl: null,
-          responseJson: uploadResult.responseJson,
-          responseTextSnippet: uploadResult.responseText.slice(0, UPLOAD_TEXT_LIMIT),
-          uploadSkipped: false,
-        };
+          upload = {
+            attempted: true,
+            mode: "upload",
+            ok: uploadResult.ok,
+            status: uploadResult.status,
+            outZipUrl: null,
+            responseJson: uploadResult.responseJson,
+            responseTextSnippet: uploadResult.responseText.slice(0, UPLOAD_TEXT_LIMIT),
+            uploadSkipped: false,
+          };
 
-        if (!uploadResult.ok) {
-          const shortReason = uploadResult.responseText.slice(0, 120).replace(/\s+/g, " ");
-          const failMessage = `WPUploadFailed: ${uploadResult.status} ${shortReason}`;
+          if (!uploadResult.ok) {
+            const shortReason = uploadResult.responseText.slice(0, 120).replace(/\s+/g, " ");
+            const failMessage = `WPUploadFailed: ${uploadResult.status} ${shortReason}`;
+
+            if (WP_FAIL_ON_UPLOAD_ERROR) {
+              throw new Error(failMessage);
+            }
+
+            jobLogger.error({ status: uploadResult.status, endpoint: job.data.save.endpoint }, failMessage);
+          }
+        } catch (error) {
+          mark("upload_to_wp");
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.startsWith("WPUploadFailed:") && WP_FAIL_ON_UPLOAD_ERROR) {
+            throw error instanceof Error ? error : new Error(message);
+          }
+          const failMessage = `WPUploadTransportFailed: ${message.slice(0, 180).replace(/\s+/g, " ")}`;
+          upload = {
+            attempted: true,
+            mode: "upload",
+            ok: false,
+            status: null,
+            outZipUrl: null,
+            responseJson: null,
+            responseTextSnippet: failMessage.slice(0, UPLOAD_TEXT_LIMIT),
+            uploadSkipped: false,
+          };
 
           if (WP_FAIL_ON_UPLOAD_ERROR) {
             throw new Error(failMessage);
           }
 
-          jobLogger.error({ status: uploadResult.status, endpoint: job.data.save.endpoint }, failMessage);
+          jobLogger.error({ endpoint: job.data.save.endpoint, err: error }, failMessage);
         }
       } else {
         upload = {
@@ -1355,6 +1436,8 @@ const worker = new Worker(
         imageSlotsInvalidCount,
         imagePlanPathTmp: path.relative(process.cwd(), imagePlanTmpPath),
         diagnosticsIncluded,
+        contentQualityScore: contentQuality.score,
+        contentQualityIssueCount: contentQuality.issues.length,
         layoutEngineEnabled: layoutEngineDiagnostics.enabled,
         layoutEngineMode: layoutEngineDiagnostics.mode,
         layoutIds,
@@ -1371,6 +1454,7 @@ const worker = new Worker(
         backgroundsMissing: backgroundsMissingCapped,
         ragIncluded,
       },
+      contentQuality,
       rag: {
         enabled: ragEnabledForJob,
         ok: ragEnabledForJob ? !ragError : false,
@@ -1458,6 +1542,8 @@ const worker = new Worker(
         ragHitCount,
         ragIncluded,
         ragError,
+        contentQualityScore: contentQuality.score,
+        contentQualityIssueCount: contentQuality.issues.length,
         llmEnabled: llmDiagnostics.enabled,
         llmAttempted: llmDiagnostics.attempted,
         llmModel: llmMeta?.model || llmDiagnostics.model,

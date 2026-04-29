@@ -28,6 +28,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       PRESENTONIKA_ORCHESTRATOR_KEY: ${PRESENTONIKA_ORCHESTRATOR_KEY:-strong-secret-token}
       ORCHESTRATOR_PUBLIC_KEY: ${ORCHESTRATOR_PUBLIC_KEY:-change-me-long-random-string}
+      ENABLE_MOCK_WP: ${ENABLE_MOCK_WP:-false}
       PUBLIC_ZIP_BASE_URL: ${PUBLIC_ZIP_BASE_URL:-http://localhost:8080}
       STAGED_DIR: .staged
       STAGED_ENABLE_SERVER: ${STAGED_ENABLE_SERVER:-true}

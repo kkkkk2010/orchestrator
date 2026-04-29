@@ -1,7 +1,8 @@
 import path from "node:path";
 import fs from "node:fs/promises";
+import { parseImageAtBinding } from "./imageAt";
 
-type ImageAtRule = Record<string, string>;
+type ImageAtRule = Record<string, unknown>;
 
 type SlideRule = {
   imageAt?: ImageAtRule;
@@ -101,14 +102,15 @@ export const planImageReplacements = async ({
 
     for (const [elementIndexRaw, slotNameRaw] of Object.entries(imageAt)) {
       const elementIndex = Number.parseInt(elementIndexRaw, 10);
-      const slotName = typeof slotNameRaw === "string" ? slotNameRaw : "";
+      const binding = parseImageAtBinding(slotNameRaw);
+      const slotName = binding?.slotId ?? "";
 
-      if (!Number.isInteger(elementIndex) || elementIndex < 0) {
+      if (!Number.isInteger(elementIndex) || elementIndex < 0 || !binding) {
         missing.push({
           slide: slideIndex1Based,
           element: elementIndex,
           slot: slotName,
-          reason: "invalid_element_index",
+          reason: !binding ? "invalid_slot" : "invalid_element_index",
         });
         continue;
       }
@@ -144,7 +146,11 @@ export const planImageReplacements = async ({
         continue;
       }
 
-      const testImageFileName = pickTestImageFileName(slotName);
+      const testImageFileName = binding.kind === "icon"
+        ? "icon.png"
+        : binding.kind === "photo"
+          ? "photo.jpg"
+          : pickTestImageFileName(slotName);
       const localFilePath = path.resolve(themeDir, "test-images", testImageFileName);
 
       if (!(await fileExists(localFilePath))) {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { parseImageAtBinding } from "./imageAt";
 
 export const imagePlanSlotSchema = z.object({
   slotId: z.string(),
@@ -36,7 +37,7 @@ export type ImagePlanSlot = z.infer<typeof imagePlanSlotSchema>;
 export type ImagePlanV1 = z.infer<typeof imagePlanSchema>;
 
 type SlideRule = {
-  imageAt?: Record<string, string>;
+  imageAt?: Record<string, unknown>;
 };
 
 type ThemeMap = {
@@ -53,6 +54,8 @@ export type ImageSlotTarget = {
   slotId: string;
   elementId?: string;
   src?: string;
+  kind?: ImagePlanSlot["kind"];
+  aspect?: ImagePlanSlot["aspect"];
   source: TargetSource;
   status: TargetStatus;
   reasons: string[];
@@ -79,6 +82,8 @@ export type ImagePlanBuildDiagnostics = {
     currentIndex?: number;
     slotId: string;
     elementId?: string;
+    kind?: ImagePlanSlot["kind"];
+    aspect?: ImagePlanSlot["aspect"];
     status: "ok" | "dropped" | "invalid";
     reasons: string[];
   }>;
@@ -289,12 +294,12 @@ export const collectImageTargetsFromMap = (params: { map: unknown; doc: unknown 
 
     for (const [elementRaw, slotRaw] of Object.entries(imageAt)) {
       const originalIndex = Number.parseInt(elementRaw, 10);
-      const slotId = typeof slotRaw === "string" ? safeSlotId(slotRaw) : "";
-      if (!Number.isInteger(originalIndex) || originalIndex < 0 || !slotId) {
+      const binding = parseImageAtBinding(slotRaw);
+      if (!Number.isInteger(originalIndex) || originalIndex < 0 || !binding) {
         targets.push({
           slide,
           originalIndex,
-          slotId,
+          slotId: binding?.slotId ?? "",
           source: "map",
           status: "invalid",
           reasons: ["invalid_index_or_slot"],
@@ -310,7 +315,9 @@ export const collectImageTargetsFromMap = (params: { map: unknown; doc: unknown 
         targets.push({
           slide,
           originalIndex,
-          slotId,
+          slotId: binding.slotId,
+          kind: binding.kind,
+          aspect: binding.aspect,
           source: "map",
           status: "invalid",
           reasons: ["element_out_of_range"],
@@ -322,9 +329,11 @@ export const collectImageTargetsFromMap = (params: { map: unknown; doc: unknown 
       targets.push({
         slide,
         originalIndex,
-        slotId,
+        slotId: binding.slotId,
         elementId,
         src: typeof elementNode.src === "string" ? elementNode.src : undefined,
+        kind: binding.kind,
+        aspect: binding.aspect,
         source: "map",
         status: elementId ? "ok" : "invalid",
         reasons: elementId ? ["map_binding"] : ["missing_element_id"],
@@ -357,6 +366,8 @@ export const collectMergedImageTargets = (params: {
       merged.set(key, {
         ...existing,
         slotId: mapTarget.slotId || existing.slotId,
+        kind: mapTarget.kind || existing.kind,
+        aspect: mapTarget.aspect || existing.aspect,
         source: "map",
         reasons: [...new Set([...existing.reasons, "slot_overridden_by_map"])],
       });
@@ -471,8 +482,8 @@ export const buildImagePlanFromResolvedTargets = (params: {
     const width = readNum(elementNode.width);
     const height = readNum(elementNode.height);
 
-    const aspect = resolveAspect({ width, height });
-    const kind = resolveKind({ slotId: target.slotId, width, height, slideWidth, slideHeight });
+    const aspect = target.aspect || resolveAspect({ width, height });
+    const kind = target.kind || resolveKind({ slotId: target.slotId, width, height, slideWidth, slideHeight });
     const semantic = semanticFromSlot(target.slotId, kind);
     const styleHint = styleFromKind(kind);
     const negative = kind === "icon"
@@ -573,6 +584,8 @@ export const buildImagePlanWithDiagnostics = (params: {
       currentIndex: target.currentIndex,
       slotId: target.slotId,
       elementId: target.elementId,
+      kind: target.kind,
+      aspect: target.aspect,
       status: target.status,
       reasons: target.reasons,
     })),

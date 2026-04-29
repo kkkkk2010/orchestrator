@@ -47,6 +47,35 @@ export const runImagePlanTests = (): void => {
 
   assert.equal(built.imagePlan.slots.length, 1);
   assert.equal(built.imagePlan.slots[0].slotId, "s1_hero");
+  assert.equal(built.imagePlan.slots[0].element, 2);
+
+  const objectMap = {
+    slides: {
+      "1": {
+        imageAt: {
+          "2": { slotId: "img_s1", kind: "hero", aspect: "portrait" },
+        },
+      },
+    },
+  };
+
+  const objectBuilt = buildImagePlanWithDiagnostics({
+    map: objectMap,
+    originalDoc: doc,
+    currentDoc: doc,
+    presentationId: 1,
+    themeId: "_example",
+    topic: "Тема",
+    language: "ru",
+    autoDetect: false,
+    fallbackAllNonDecor: true,
+  });
+
+  assert.equal(objectBuilt.imagePlan.slots.length, 1);
+  assert.equal(objectBuilt.imagePlan.slots[0].slotId, "img_s1");
+  assert.equal(objectBuilt.imagePlan.slots[0].kind, "hero");
+  assert.equal(objectBuilt.imagePlan.slots[0].aspect, "portrait");
+  assert.equal(objectBuilt.diagnostics.invalidCount, 0);
 
   const droppedDoc = {
     slides: [

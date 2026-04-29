@@ -27,20 +27,6 @@ const createLayoutDebugLabel = (layoutId: string): AnyRecord => ({
   },
 });
 
-const createBackgroundElement = (slide: number): AnyRecord => ({
-  type: "image",
-  name: "theme_background",
-  x: 0,
-  y: 0,
-  width: 1536,
-  height: 864,
-  src: `backgrounds/slide-${slide}.png`,
-  meta: {
-    decor: true,
-    background: true,
-  },
-});
-
 const readZipEntries = async (zipPath: string): Promise<Map<string, Buffer>> => {
   const zipFile = await new Promise<yauzl.ZipFile>((resolve, reject) => {
     yauzl.open(zipPath, { lazyEntries: true }, (error, zf) => (error || !zf ? reject(error ?? new Error("open zip failed")) : resolve(zf)));
@@ -112,10 +98,9 @@ export const mergeLayoutSlides = async (params: {
     };
 
     const elements = Array.isArray(slideObj.elements) ? slideObj.elements : [];
-    const withBackground = [createBackgroundElement(row.slide), ...elements];
     const nextElements = layoutDebugLabelEnabled()
-      ? [...withBackground, createLayoutDebugLabel(row.layoutId)]
-      : withBackground;
+      ? [...elements, createLayoutDebugLabel(row.layoutId)]
+      : elements;
 
     slideObj.elements = nextElements.map((element, index) => {
       const el = asRecord(element);
