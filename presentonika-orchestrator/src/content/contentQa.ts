@@ -22,6 +22,8 @@ export type ContentQaReport = {
     bulletIssueCount: number;
     requiredCountMismatchCount: number;
     narrativeIssueCount: number;
+    overclaimRiskCount: number;
+    chronologyRiskCount: number;
     repeatedLineCount: number;
     placeholderLeakCount: number;
   };
@@ -150,10 +152,29 @@ const significanceHints = [
 const overclaimPatterns = [
   /\bперв(ым|ая|ое|ые)\b/i,
   /создал(?:а|и)?\s+(?:русский\s+)?литературный\s+язык/i,
+  /создал(?:а|и)?\s+современн(?:ый|ого)\s+русск(?:ий|ого)\s+литературн(?:ый|ого)\s+язык/i,
+  /сформировал(?:а|и)?\s+современн(?:ый|ого)\s+русск(?:ий|ого)\s+литературн(?:ый|ого)\s+язык/i,
   /основал(?:а|и)?\s+.*\b(?:жанр|направление|литературу)\b/i,
+  /основоположник/i,
+  /перевернул(?:а|и)?\s+.*\b(?:язык|литературу)\b/i,
   /определил(?:а|и)?\s+навсегда/i,
   /единственн/i,
   /без\s+него\s+не\s+было\s+бы/i,
+];
+
+const cautionMarkers = [
+  "считается",
+  "одной из",
+  "одним из",
+  "во многом",
+  "помог",
+  "помогла",
+  "сыграл",
+  "сыграла",
+  "подготовил",
+  "подготовила",
+  "стал важным",
+  "стал поворотной",
 ];
 
 const memoryOnlyQuizPatterns = [
@@ -186,6 +207,21 @@ const evidenceHints = [
   "пример",
   "через",
 ];
+
+const hasRiskyOverclaim = (line: string): boolean => {
+  const normalized = line.toLowerCase();
+  if (cautionMarkers.some((marker) => normalized.includes(marker))) return false;
+  return overclaimPatterns.some((pattern) => pattern.test(line));
+};
+
+const hasChronologyRisk = (line: string): boolean => {
+  const normalized = line.toLowerCase();
+  const onegin = /евгени[йя]\s+онегин/i.test(line);
+  if (onegin && /1830-[еx]|1830-х|в\s+1830/i.test(normalized) && !/(1823|1831|1833|1823\s*[–-]\s*1831)/.test(normalized)) {
+    return true;
+  }
+  return false;
+};
 
 const hasSignificance = (value: string): boolean => {
   const lc = value.toLowerCase();
@@ -307,10 +343,15 @@ const assessNarrative = (params: {
   const slideSignals = new Map<string, number[]>();
   const repeatedSignals = [
     "литературный язык",
+    "точка сборки",
     "важен",
     "влияние на культуру",
     "центральная фигура",
     "создал язык",
+    "создал современный язык",
+    "создал современный русский литературный язык",
+    "соединил живую речь",
+    "живую речь и высокий стиль",
     "изменил литературу",
   ];
   for (const [slide, text] of slides.entries()) {
@@ -321,7 +362,7 @@ const assessNarrative = (params: {
     }
   }
   for (const [signal, owners] of slideSignals.entries()) {
-    if (owners.length >= 4) {
+    if (owners.length >= 3) {
       pushIssue(issues, {
         code: "repeated_central_claim",
         severity: "warn",
@@ -359,6 +400,16 @@ const assessNarrative = (params: {
 
   const examples = fills.s8_examples || "";
   const exampleLines = linesOf(examples);
+  if (exampleLines.length > 0 && exampleLines.length < 4) {
+    pushIssue(issues, {
+      code: "examples_count_low",
+      severity: "error",
+      key: "s8_examples",
+      slide: 8,
+      message: `Examples slide should contain exactly 4 examples; got ${exampleLines.length}.`,
+      sample: examples.slice(0, 160),
+    });
+  }
   if (exampleLines.length > 0 && exampleLines.filter((line) => includesAny(line, evidenceHints)).length < Math.ceil(exampleLines.length / 2)) {
     pushIssue(issues, {
       code: "examples_not_used_as_evidence",
@@ -366,6 +417,14 @@ const assessNarrative = (params: {
       key: "s8_examples",
       slide: 8,
       message: "Examples are listed without showing how they support the thesis.",
+      sample: examples.slice(0, 160),
+    });
+    pushIssue(issues, {
+      code: "examples_not_argumentative",
+      severity: "warn",
+      key: "s8_examples",
+      slide: 8,
+      message: "Examples should explicitly work as evidence for the thesis.",
       sample: examples.slice(0, 160),
     });
   }
@@ -386,6 +445,16 @@ const assessNarrative = (params: {
   }
 
   const conclusion = `${fills.s10_title || ""}\n${fills.s10_summary || ""}`;
+  const conclusionRiskLine = linesOf(conclusion).find(hasRiskyOverclaim) || (hasRiskyOverclaim(conclusion) ? conclusion : "");
+  if (conclusionRiskLine) {
+    pushIssue(issues, {
+      code: "conclusion_overclaim",
+      severity: "warn",
+      slide: 10,
+      message: "Conclusion answers too categorically; use cautious academic wording.",
+      sample: conclusionRiskLine.slice(0, 160),
+    });
+  }
   const questionWords = importantQuestionWords(plan);
   const matchedQuestionWords = questionWords.filter((word) => normalize(conclusion).includes(word));
   if (conclusion.trim() && matchedQuestionWords.length < 2 && !includesAny(conclusion, ["ответ", "вывод", "значит", "потому", "следовательно"])) {
@@ -497,6 +566,14 @@ export const runContentQa = (params: {
         message: `Expected exactly ${exactCount} lines, got ${bulletLines.length}.`,
         sample: value.slice(0, 120),
       });
+      pushIssue(issues, {
+        code: "weak_exact_count_instruction",
+        severity: "error",
+        key,
+        slide,
+        message: `Prompt/budget says exactly ${exactCount}, but output has ${bulletLines.length}.`,
+        sample: value.slice(0, 120),
+      });
     }
 
     if (largeBlock?.bullets && bulletLines.length < largeBlock.bullets) {
@@ -536,7 +613,7 @@ export const runContentQa = (params: {
       });
     }
 
-    const overclaim = [value, ...bulletLines].find((line) => overclaimPatterns.some((pattern) => pattern.test(line)));
+    const overclaim = [value, ...bulletLines].find(hasRiskyOverclaim);
     if (overclaim) {
       pushIssue(issues, {
         code: "overclaim_risk",
@@ -545,6 +622,18 @@ export const runContentQa = (params: {
         slide,
         message: "Text uses a risky absolute claim; prefer cautious wording unless sourced.",
         sample: overclaim.slice(0, 140),
+      });
+    }
+
+    const chronologyRisk = [value, ...bulletLines].find(hasChronologyRisk);
+    if (chronologyRisk) {
+      pushIssue(issues, {
+        code: "chronology_risk",
+        severity: "warn",
+        key,
+        slide,
+        message: "Chronology may be oversimplified or misleading; use a range or avoid precise dating.",
+        sample: chronologyRisk.slice(0, 160),
       });
     }
 
@@ -669,6 +758,13 @@ export const runContentQa = (params: {
       message: `Expected exactly 3 quiz questions, got ${quizKeys.length}.`,
       sample: quizKeys.join(", "),
     });
+    pushIssue(issues, {
+      code: "weak_exact_count_instruction",
+      severity: "error",
+      slide: 9,
+      message: `Prompt/budget says exactly 3 quiz questions, but output has ${quizKeys.length}.`,
+      sample: quizKeys.join(", "),
+    });
   }
 
   assessNarrative({ fills: params.fills, plan, issues });
@@ -686,6 +782,7 @@ export const runContentQa = (params: {
     "goals_not_matching_narrative_plan",
     "hook_not_connected_to_following_slides",
     "examples_not_used_as_evidence",
+    "examples_not_argumentative",
     "quiz_not_testing_narrative",
     "disconnected_slide_sequence",
   ]);
@@ -701,6 +798,8 @@ export const runContentQa = (params: {
       bulletIssueCount: issues.filter((issue) => issue.code === "too_few_bullets" || issue.code === "bullet_too_short").length,
       requiredCountMismatchCount: issues.filter((issue) => issue.code === "required_count_mismatch").length,
       narrativeIssueCount: issues.filter((issue) => narrativeCodes.has(issue.code)).length,
+      overclaimRiskCount: issues.filter((issue) => issue.code === "overclaim_risk" || issue.code === "conclusion_overclaim").length,
+      chronologyRiskCount: issues.filter((issue) => issue.code === "chronology_risk").length,
       repeatedLineCount,
       placeholderLeakCount: issues.filter((issue) => issue.code === "placeholder_leak").length,
     },

@@ -46,22 +46,22 @@ const keyRule = (key: string): string => {
   if (normalized === "s3_hook_why") return "1 фраза почему это важно";
   if (normalized === "s4_title") return "смысловой заголовок роли/контекста, <=5 слов; избегай 'Определение и термины'";
   if (normalized === "s4_definition") return "объясни роль, значение или контекст темы, 24-38 слов; для человека не пиши как словарную статью";
-  if (normalized === "s4_keywords") return "5-7 терминов с короткими пояснениями, через точки с запятой; не просто список слов через запятую";
+  if (normalized === "s4_keywords") return "4-5 компактных термина по центральной линии; каждый термин <=3 слов, без длинных определений и мини-словарика";
   if (normalized === "s5_title") return "заголовок смысловых фактов, <=5 слов; избегай 'Ключевые факты'";
-  if (normalized === "s5_bullets") return "ровно 5 пунктов, каждая строка с •; в каждом пункте факт + почему он важен, 12-22 слова";
+  if (normalized === "s5_bullets") return "ровно 5 пунктов, каждая строка с •; факт + значение, 12-22 слова; избегай абсолютов вроде первый/создал/основоположник, пиши осторожно: считается, во многом, сыграл роль";
   if (normalized === "s6_title") return "заголовок сравнения, <=5 слов";
   if (normalized.includes("left_title")) return "название левой колонки, <=4 слов";
   if (normalized.includes("right_title")) return "название правой колонки, <=4 слов";
   if (normalized.includes("left_bullets") || normalized.includes("right_bullets")) return "ровно 3 пункта колонки, каждая строка с •";
   if (normalized === "s7_title") return "заголовок этапов, <=5 слов";
-  if (/s7_step\d+/.test(normalized)) return "1 этап: дата/период + событие + значение, <=18 слов";
+  if (/s7_step\d+/.test(normalized)) return "1 этап: период + событие + значение, <=18 слов; не давай грубую датировку произведений, если точный диапазон сложнее";
   if (normalized === "s8_title") return "заголовок примеров, <=5 слов";
-  if (normalized === "s8_examples") return "ровно 4 конкретных примера, каждая строка с •; пример + что он показывает";
+  if (normalized === "s8_examples") return "ровно 4 конкретных примера, каждая строка с •; произведение/пример + как он доказывает thesis, не просто список";
   if (normalized === "s9_title") return "заголовок проверки, <=5 слов";
   if (normalized === "s9_task") return "короткая инструкция к заданию";
   if (/s9_q\d+/.test(normalized)) return "1 проверочный вопрос по теме";
   if (normalized === "s10_title") return "заголовок итога, <=5 слов";
-  if (normalized === "s10_summary") return "3 вывода, каждая строка с •; каждый вывод объясняет значение, не повторяет факты";
+  if (normalized === "s10_summary") return "ровно 3 вывода, каждая строка с •; ответь на centralQuestion осторожно, без абсолютов создал/первый/навсегда";
   if (normalized === "s10_homework") return "1 домашнее задание, практическое";
   if (normalized === "s10_sources") return "1 строка источников";
   if (normalized.includes("title")) return "<=7 слов";
@@ -121,6 +121,10 @@ const deterministicDeckContext = (input: LLMGenerateInput): string => {
     rows ? `Selected layouts: ${rows}` : "",
     "Use the selected slide role and text density when filling blocks. Bigger text blocks need explanation, not 2-3 dry fragments.",
     "For each factual bullet prefer: fact + meaning/consequence. If exact numbers are uncertain, do not invent precise quantities.",
+    "Factual caution: avoid overclaims such as первый, создал современный язык, основоположник, перевернул язык, определил навсегда. Prefer: считается одной из ключевых фигур, во многом закрепил, помог соединить, сыграл центральную роль, подготовил почву.",
+    "Exact counts are mandatory: s2_goals=3, s2_plan=3, s5_bullets=5, s8_examples=4, s9_q1/s9_q2/s9_q3=3 questions, s10_summary=3.",
+    "Keep keywords compact: 4-5 short terms only, tied to the narrative; no long glossary definitions.",
+    "For chronology, use known ranges or avoid precise dating when unsure; do not compress complex work periods into misleading decades.",
     "Avoid generic headings: Определение и термины; Ключевые факты; Основные понятия; <topic>: определение.",
     "Treat the deck as one coherent lesson, not independent slides.",
     "Each slide must advance the central argument; do not restate the same central claim on every slide.",

@@ -46,4 +46,8 @@ export const runNarrativePlanTests = (): void => {
   assert.ok(prompt.includes("slide-by-slide narrativePlan"));
   assert.ok(prompt.includes("current batch narrative relation"));
   assert.ok(prompt.includes("Examples must support the thesis"));
+  assert.ok(prompt.includes("Factual caution"));
+  assert.ok(prompt.includes("Exact counts are mandatory"));
+  assert.ok(prompt.includes("s8_examples=4"));
+  assert.ok(prompt.includes("Keep keywords compact"));
 };

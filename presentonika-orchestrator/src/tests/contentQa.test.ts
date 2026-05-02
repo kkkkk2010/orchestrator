@@ -21,7 +21,7 @@ export const runContentQaTests = (): void => {
     s6_left_bullets: "• Пушкин важен для литературного языка.\n• Романтизм.\n• Поэзия.",
     s6_right_bullets: "• Пушкин важен для литературного языка.\n• Реализм.\n• Проза.",
     s7_title: "Этапы",
-    s7_step1: "Лицей",
+    s7_step1: "1830-е: «Евгений Онегин» закрепляет зрелый стиль.",
     s7_step2: "Юг",
     s8_title: "Произведения",
     s8_examples: "• Евгений Онегин\n• Капитанская дочка\n• Борис Годунов",
@@ -29,7 +29,7 @@ export const runContentQaTests = (): void => {
     s9_q1: "В каком году родился Пушкин?",
     s9_q2: "Какое произведение считается главным?",
     s10_title: "Итог",
-    s10_summary: "• Запомните даты.\n• Выучите названия.\n• Повторите биографию.",
+    s10_summary: "• Пушкин создал современный русский литературный язык.\n• Выучите названия.\n• Повторите биографию.",
     s10_sources: "Источники: учебник, энциклопедии, официальные документы, проверенные обзоры.",
   };
   const before = JSON.stringify(fills);
@@ -50,8 +50,13 @@ export const runContentQaTests = (): void => {
   assert.ok(codes.has("bare_fact_without_meaning"));
   assert.ok(codes.has("bullet_too_short"));
   assert.ok(codes.has("required_count_mismatch"));
+  assert.ok(codes.has("weak_exact_count_instruction"));
+  assert.ok(codes.has("examples_count_low"));
+  assert.ok(codes.has("examples_not_argumentative"));
   assert.ok(codes.has("weak_learning_verbs"));
   assert.ok(codes.has("overclaim_risk"));
+  assert.ok(codes.has("chronology_risk"));
+  assert.ok(codes.has("conclusion_overclaim"));
   assert.ok(codes.has("memory_only_quiz"));
   assert.ok(codes.has("generic_sources"));
   assert.ok(codes.has("repeated_central_claim"));
@@ -62,8 +67,11 @@ export const runContentQaTests = (): void => {
   assert.ok(codes.has("examples_not_used_as_evidence"));
   assert.ok(codes.has("quiz_not_testing_narrative"));
   assert.ok(report.stats.requiredCountMismatchCount >= 1);
+  assert.ok(report.stats.overclaimRiskCount >= 1);
+  assert.ok(report.stats.chronologyRiskCount >= 1);
   assert.ok(report.stats.narrativeIssueCount >= 1);
   assert.ok(report.score < 100);
+  assert.equal(report.issues.find((issue) => issue.code === "required_count_mismatch")?.severity, "error");
 
   const malformedPlan = {
     ...plan,
@@ -101,4 +109,25 @@ export const runContentQaTests = (): void => {
     narrativePlan: plan,
   });
   assert.ok(new Set(disconnected.issues.map((issue) => issue.code)).has("disconnected_slide_sequence"));
+
+  const goodTitleReport = runContentQa({
+    fills: {
+      s4_title: "Эпоха и языковой разрыв",
+      s4_definition: "Пушкин работал внутри культурной ситуации, где книжная традиция и живая речь требовали нового равновесия.",
+    },
+    fillKeys: ["s4_title", "s4_definition"],
+    topic: "Александр Пушкин",
+    narrativePlan: plan,
+  });
+  assert.equal(goodTitleReport.issues.some((issue) => issue.code === "generic_title" && issue.key === "s4_title"), false);
+
+  const cautiousReport = runContentQa({
+    fills: {
+      s5_bullets: "• Пушкин считается одной из ключевых фигур формирования современного литературного языка.\n• Он помог соединить живую речь и книжную традицию.\n• Его проза стала важным образцом исторического повествования.\n• Лирика показала точность простой речи.\n• Драматургия связала историю и конфликт личности.",
+    },
+    fillKeys: ["s5_bullets"],
+    topic: "Александр Пушкин",
+    narrativePlan: plan,
+  });
+  assert.equal(cautiousReport.issues.some((issue) => issue.code === "overclaim_risk"), false);
 };
