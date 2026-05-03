@@ -7,6 +7,7 @@ import { getQueue, getQueueRedisConnection } from "./queue";
 import { createJobSchema } from "./schema";
 import { registerStagedRoutes } from "./staged/stagedRoutes";
 import { startCleanupService } from "./cleanup/cleanupService";
+import { generateDeckPlan } from "./deckPlan";
 
 const port = Number(process.env.PORT || 8080);
 const mockWpEnabled = process.env.ENABLE_MOCK_WP === "true";
@@ -81,6 +82,29 @@ app.get("/health", async () => ({
   service: "orchestrator",
   ts: new Date().toISOString(),
 }));
+
+app.post("/plans", async (request, reply) => {
+  if (!requirePublicKey(request, reply)) {
+    return;
+  }
+
+  try {
+    const result = await generateDeckPlan(request.body);
+    request.log.info({ source: result.diagnostics.source, llmUsed: result.diagnostics.llmUsed }, "deck plan generated");
+    return {
+      ok: true,
+      deckPlan: result.deckPlan,
+      diagnostics: result.diagnostics,
+    };
+  } catch (error) {
+    request.log.warn({ err: error }, "deck plan generation failed");
+    return reply.status(400).send({
+      ok: false,
+      error: "plan_generation_failed",
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+});
 
 app.post("/jobs", async (request, reply) => {
   if (!requirePublicKey(request, reply)) {

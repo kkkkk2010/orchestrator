@@ -34,6 +34,7 @@ import { applyTypographyStandards, autoFitText, dedupeBulletLines, generateLocal
 import { compileLayoutPresentation } from "./layouts";
 import { runContentQa } from "./content/contentQa";
 import { buildNarrativePlan, sourceFallbackForTopic } from "./content/narrativePlan";
+import { buildDeterministicDeckPlan } from "./deckPlan";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
@@ -467,6 +468,20 @@ const worker = new Worker(
     const fillKeys = [...new Set(placeholderScan.locations.map((item) => item.key))];
     const topic = typeof job.data?.topic === "string" ? job.data.topic : "";
     const language = typeof job.data?.language === "string" ? job.data.language : null;
+    const providedDeckPlan = job.data?.deckPlan;
+    const deckPlan = providedDeckPlan ?? buildDeterministicDeckPlan({
+      topic,
+      language: language || "ru",
+      slideCount,
+      presentationType: "auto",
+    });
+    const deckPlanDiagnostics = {
+      present: Boolean(providedDeckPlan),
+      source: deckPlan.source,
+      mode: providedDeckPlan ? "provided" : "deterministic_fallback",
+      slideCount: deckPlan.slideCount,
+      presentationType: deckPlan.presentationType,
+    };
     const narrativePlan = buildNarrativePlan({
       topic,
       selectedLayouts: layoutEngineDiagnostics.selectedLayouts,
@@ -594,6 +609,7 @@ const worker = new Worker(
             fillKeys: batch.keys,
             imagePlan: batchImagePlanInput,
             strictKeysRequired: true,
+            deckPlan,
             narrativePlan,
             layoutContext: layoutEngineDiagnostics.selectedLayouts
               .filter((row) => !batch.slide || row.slide === batch.slide)
@@ -800,6 +816,7 @@ const worker = new Worker(
             imagePlan: buildImagePlanFromMap({ map, doc, presentationId, themeId, topic, language }),
             mode: "targeted_fills",
             strictKeysRequired: true,
+            deckPlan,
             narrativePlan,
             layoutContext: layoutEngineDiagnostics.selectedLayouts
               .filter((row) => keys.some((key) => key.startsWith(`s${row.slide}_`)))
@@ -858,6 +875,7 @@ const worker = new Worker(
       fills,
       fillKeys,
       topic,
+      deckPlan,
       narrativePlan,
     });
     jobLogger.info(
@@ -1039,6 +1057,7 @@ const worker = new Worker(
             : "No final slots resolved. Check imageAt bindings or auto-detect settings.",
         },
         layoutEngine: layoutEngineDiagnostics,
+        deckPlan: deckPlanDiagnostics,
         narrativePlan,
         llm: llmDiagnostics,
         fills: {
@@ -1462,6 +1481,11 @@ const worker = new Worker(
         backgroundsReplacedCount,
         backgroundsMissing: backgroundsMissingCapped,
         ragIncluded,
+      },
+      deckPlan: {
+        ...deckPlanDiagnostics,
+        centralQuestion: deckPlan.centralQuestion,
+        thesis: deckPlan.thesis,
       },
       narrativePlan,
       contentQuality,

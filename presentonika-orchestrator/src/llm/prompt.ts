@@ -96,10 +96,34 @@ const deterministicDeckContext = (input: LLMGenerateInput): string => {
     .map((row) => `slide ${row.slide}: type=${row.slideType}, layoutId=${row.layoutId}, role=${row.role}, density=${row.textDensity}`)
     .join("; ");
 
+  const deckPlan = input.deckPlan;
   const narrative = input.narrativePlan;
   const currentSlides = new Set((input.layoutContext || [])
     .map((row) => row.slide)
     .concat(input.fillKeys.map((key) => Number.parseInt(key.match(/^s(\d+)_/i)?.[1] || "", 10)).filter(Number.isFinite)));
+  const deckPlanSlides = deckPlan?.slides
+    .map((slide) => {
+      const required = slide.requiredItems.length > 0
+        ? ` required=${slide.requiredItems.map((item) => `${item.key || item.kind}:${item.exact ? "exactly " : ""}${item.count}`).join(",")}`
+        : "";
+      return `${slide.slide}. role=${slide.role}; titleIntent=${slide.titleIntent}; claim=${slide.claim}; include=${slide.mustInclude.join(", ")}; avoid=${slide.mustAvoid.join(", ")}; evidence=${slide.expectedEvidence.join(", ")};${required}`;
+    })
+    .join("; ");
+  const currentDeckPlanSlides = deckPlan?.slides
+    .filter((slide) => currentSlides.size === 0 || currentSlides.has(slide.slide))
+    .map((slide) => {
+      const required = slide.requiredItems.length > 0
+        ? `requiredItems=${slide.requiredItems.map((item) => `${item.key || item.kind}:${item.exact ? "exactly " : ""}${item.count}`).join(", ")}`
+        : "requiredItems=none";
+      return [
+        `current slide ${slide.slide}: role=${slide.role}; claim=${slide.claim}; ${required}`,
+        `mustInclude=${slide.mustInclude.join(", ") || "none"}`,
+        `mustAvoid=${slide.mustAvoid.join(", ") || "none"}`,
+        slide.relationToPrevious ? `previous=${slide.relationToPrevious}` : "",
+        slide.relationToNext ? `next=${slide.relationToNext}` : "",
+      ].filter(Boolean).join("; ");
+    })
+    .join("\n");
   const slidePlan = narrative?.slides
     .map((slide) => `${slide.slide}. ${slide.purpose}: ${slide.focus}`)
     .join("; ");
@@ -114,8 +138,12 @@ const deterministicDeckContext = (input: LLMGenerateInput): string => {
 
   return [
     "Deck architecture: 10-slide teacher deck = cover, goals/plan, hook, context, facts, comparison, timeline/steps, examples, quiz, summary.",
-    narrative ? `centralQuestion: ${narrative.centralQuestion}` : "",
-    narrative ? `thesis: ${narrative.thesis}` : "",
+    deckPlan ? `DeckPlan source=${deckPlan.source}; presentationType=${deckPlan.presentationType}` : "",
+    deckPlan ? `centralQuestion: ${deckPlan.centralQuestion}` : (narrative ? `centralQuestion: ${narrative.centralQuestion}` : ""),
+    deckPlan ? `thesis: ${deckPlan.thesis}` : (narrative ? `thesis: ${narrative.thesis}` : ""),
+    deckPlanSlides ? `DeckPlan slide contracts: ${deckPlanSlides}` : "",
+    currentDeckPlanSlides ? `current batch DeckPlan contract:\n${currentDeckPlanSlides}` : "",
+    deckPlan ? `DeckPlan globalRules: ${deckPlan.globalRules.join(" | ")}` : "",
     slidePlan ? `slide-by-slide narrativePlan: ${slidePlan}` : "",
     currentPlan ? `current batch narrative relation:\n${currentPlan}` : "",
     rows ? `Selected layouts: ${rows}` : "",

@@ -18,12 +18,14 @@ import { runThemeStoreTests } from "./themeStore.test";
 import { runContentQaTests } from "./contentQa.test";
 import { runPlanImageReplacementsTests } from "./planImageReplacements.test";
 import { runNarrativePlanTests } from "./narrativePlan.test";
+import { runDeckPlanTests } from "./deckPlan.test";
 
 const run = async (): Promise<void> => {
   runPlaceholderTests();
   runThemeStoreTests();
   runContentQaTests();
   runNarrativePlanTests();
+  await runDeckPlanTests();
   runImagePlanTests();
   await runPlanImageReplacementsTests();
   runLlmParsingTests();

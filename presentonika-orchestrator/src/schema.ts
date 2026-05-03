@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { deckPlanSchema } from "./deckPlan";
 
 export const createJobSchema = z.object({
   presentationId: z.number(),
@@ -6,6 +7,7 @@ export const createJobSchema = z.object({
   topic: z.string().min(1),
   themeId: z.string().min(1),
   language: z.string().optional(),
+  deckPlan: deckPlanSchema.optional(),
   debug: z
     .object({
       fills: z.record(z.string()).optional(),

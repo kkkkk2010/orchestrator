@@ -1,10 +1,13 @@
 import { buildNarrativePlan, type NarrativePlanContext } from "./narrativePlan";
+import type { DeckPlan } from "../deckPlan";
 
 export type ContentQaSeverity = "info" | "warn" | "error";
+export type ContentQaLayer = "format" | "content" | "plan";
 
 export type ContentQaIssue = {
   code: string;
   severity: ContentQaSeverity;
+  layer?: ContentQaLayer;
   key?: string;
   slide?: number;
   message: string;
@@ -16,6 +19,7 @@ export type ContentQaReport = {
   issues: ContentQaIssue[];
   stats: {
     keysChecked: number;
+    deckPlanPresent: boolean;
     missingCount: number;
     genericTitleCount: number;
     shortLargeBlockCount: number;
@@ -24,6 +28,8 @@ export type ContentQaReport = {
     narrativeIssueCount: number;
     overclaimRiskCount: number;
     chronologyRiskCount: number;
+    formatIssueCount: number;
+    planIssueCount: number;
     repeatedLineCount: number;
     placeholderLeakCount: number;
   };
@@ -67,6 +73,13 @@ const issueWeight = (severity: ContentQaSeverity): number => {
 };
 
 const pushIssue = (issues: ContentQaIssue[], issue: ContentQaIssue): void => {
+  const exists = issues.some((existing) => (
+    existing.code === issue.code
+    && existing.key === issue.key
+    && existing.slide === issue.slide
+    && existing.sample === issue.sample
+  ));
+  if (exists) return;
   issues.push(issue);
 };
 
@@ -284,6 +297,212 @@ const includesAny = (value: string, needles: string[]): boolean => {
   return needles.some((needle) => normalized.includes(normalize(needle)));
 };
 
+const bulletMarkerCount = (value: string): number => (value.match(/•/g) || []).length;
+
+const hasOptions = (value: string): boolean => /(^|\n)\s*(?:[A-DА-Г][).]|[1-4][).])\s+\S/i.test(value);
+
+const addFormatIssues = (params: {
+  value: string;
+  key: string;
+  slide?: number;
+  issues: ContentQaIssue[];
+}): void => {
+  const { value, key, slide, issues } = params;
+  if (/•\s*•/.test(value)) {
+    pushIssue(issues, {
+      code: "double_bullet_marker",
+      severity: "warn",
+      layer: "format",
+      key,
+      slide,
+      message: "Bullet line contains a duplicated bullet marker.",
+      sample: value.slice(0, 120),
+    });
+  }
+
+  const lines = value.split(/\r?\n/);
+  if (lines.some((line) => bulletMarkerCount(line) > 1)) {
+    pushIssue(issues, {
+      code: "multiple_bullets_on_one_line",
+      severity: "warn",
+      layer: "format",
+      key,
+      slide,
+      message: "Multiple bullet markers appear on one line.",
+      sample: value.slice(0, 120),
+    });
+  }
+
+  if (bulletMarkerCount(value) >= 3 && lines.filter((line) => line.includes("•")).length <= 1) {
+    pushIssue(issues, {
+      code: "bullet_block_missing_newlines",
+      severity: "warn",
+      layer: "format",
+      key,
+      slide,
+      message: "Bullet block appears to miss newlines between items.",
+      sample: value.slice(0, 120),
+    });
+  }
+
+  if (/\{\{[^}]+\}\}/.test(value)) {
+    pushIssue(issues, {
+      code: "placeholder_token_left",
+      severity: "error",
+      layer: "format",
+      key,
+      slide,
+      message: "Mustache placeholder token remains in generated content.",
+      sample: value.slice(0, 120),
+    });
+  }
+
+  if (/TEST_/i.test(value)) {
+    pushIssue(issues, {
+      code: "test_prefix_leaked",
+      severity: "error",
+      layer: "format",
+      key,
+      slide,
+      message: "TEST_ fallback prefix leaked into generated content.",
+      sample: value.slice(0, 120),
+    });
+  }
+
+  if (/выберите\s+вариант/i.test(value) && !hasOptions(value)) {
+    pushIssue(issues, {
+      code: "instruction_mentions_options_but_no_options",
+      severity: "warn",
+      layer: "format",
+      key,
+      slide,
+      message: "Instruction mentions answer options, but no options are listed.",
+      sample: value.slice(0, 120),
+    });
+  }
+
+  if (key.toLowerCase().includes("title")) {
+    const wordCount = words(value).length;
+    if (wordCount > 10) {
+      pushIssue(issues, {
+        code: "title_too_long",
+        severity: "info",
+        layer: "format",
+        key,
+        slide,
+        message: "Title is too long for a slide title.",
+        sample: value.slice(0, 120),
+      });
+    }
+    if (wordCount > 7 && /[.!?]$/.test(value.trim())) {
+      pushIssue(issues, {
+        code: "title_sentence_like",
+        severity: "info",
+        layer: "format",
+        key,
+        slide,
+        message: "Title looks like a full sentence.",
+        sample: value.slice(0, 120),
+      });
+    }
+  }
+};
+
+const countForRequiredItem = (params: {
+  deckPlan: DeckPlan;
+  fills: Record<string, string>;
+  slide: number;
+  key?: string;
+  kind: string;
+}): { count: number; sample: string } => {
+  if (params.key && typeof params.fills[params.key] === "string") {
+    const value = params.fills[params.key];
+    return { count: linesOf(value).length, sample: value.slice(0, 160) };
+  }
+
+  if (params.kind === "questions") {
+    const keys = Object.keys(params.fills).filter((key) => new RegExp(`^s${params.slide}_q\\d+$`, "i").test(key) && params.fills[key]?.trim());
+    return { count: keys.length, sample: keys.join(", ") };
+  }
+
+  const slideText = Object.entries(params.fills)
+    .filter(([key]) => slideFromKey(key) === params.slide)
+    .map(([, value]) => value)
+    .join("\n");
+  return { count: linesOf(slideText).length, sample: slideText.slice(0, 160) };
+};
+
+const assessDeckPlanAdherence = (params: {
+  deckPlan: DeckPlan;
+  fills: Record<string, string>;
+  issues: ContentQaIssue[];
+}): void => {
+  const { deckPlan, fills, issues } = params;
+  const slides = slideTextMap(fills);
+
+  for (const slide of deckPlan.slides) {
+    for (const item of slide.requiredItems) {
+      if (!item.exact) continue;
+      const counted = countForRequiredItem({
+        deckPlan,
+        fills,
+        slide: slide.slide,
+        key: item.key,
+        kind: item.kind,
+      });
+      if (counted.count !== item.count) {
+        pushIssue(issues, {
+          code: "required_count_mismatch",
+          severity: "error",
+          layer: "plan",
+          key: item.key,
+          slide: slide.slide,
+          message: `DeckPlan requires exactly ${item.count} ${item.kind}, got ${counted.count}.`,
+          sample: counted.sample,
+        });
+      }
+    }
+  }
+
+  const hookText = slides.get(3) || "";
+  if (hookText.trim() && !/[?？]/.test(hookText) && overlapScore(hookText, deckPlan.centralQuestion) < 0.08) {
+    pushIssue(issues, {
+      code: "deck_plan_hook_missing_problem",
+      severity: "warn",
+      layer: "plan",
+      slide: 3,
+      message: "DeckPlan expects slide 3 to open a problem/question, but the hook is weak.",
+      sample: hookText.slice(0, 160),
+    });
+  }
+
+  const goalsRoute = `${fills.s2_goals || ""}\n${fills.s2_plan || ""}`;
+  const plannedRoute = deckPlan.slides.slice(3, 8).map((slide) => `${slide.claim} ${slide.mustInclude.join(" ")}`).join("\n");
+  if (goalsRoute.trim() && overlapScore(goalsRoute, plannedRoute) < 0.08) {
+    pushIssue(issues, {
+      code: "deck_plan_route_mismatch",
+      severity: "warn",
+      layer: "plan",
+      key: "s2_goals",
+      slide: 2,
+      message: "Slide 2 route has weak overlap with DeckPlan slide claims.",
+      sample: goalsRoute.slice(0, 160),
+    });
+  }
+
+  const conclusion = `${fills.s10_title || ""}\n${fills.s10_summary || ""}`;
+  if (conclusion.trim() && overlapScore(conclusion, `${deckPlan.centralQuestion} ${deckPlan.thesis}`) < 0.08) {
+    pushIssue(issues, {
+      code: "deck_plan_conclusion_weak_answer",
+      severity: "warn",
+      layer: "plan",
+      slide: 10,
+      message: "Conclusion has weak relation to DeckPlan central question/thesis.",
+      sample: conclusion.slice(0, 160),
+    });
+  }
+};
+
 const assessNarrative = (params: {
   fills: Record<string, string>;
   plan: NarrativePlanContext;
@@ -487,6 +706,7 @@ export const runContentQa = (params: {
   fills: Record<string, string>;
   fillKeys: string[];
   topic: string;
+  deckPlan?: DeckPlan;
   narrativePlan?: NarrativePlanContext;
 }): ContentQaReport => {
   const issues: ContentQaIssue[] = [];
@@ -514,17 +734,20 @@ export const runContentQa = (params: {
       pushIssue(issues, {
         code: "placeholder_leak",
         severity: "error",
+        layer: "format",
         key,
         slide,
         message: "Generated fill still contains a placeholder token or TEST_ prefix.",
         sample: value.slice(0, 120),
       });
     }
+    addFormatIssues({ value, key, slide, issues });
 
     if (normalizedKey.includes("title") && genericTitlePatterns.some((pattern) => pattern.test(value))) {
       pushIssue(issues, {
         code: "generic_title",
         severity: "warn",
+        layer: "content",
         key,
         slide,
         message: "Title is too generic for a teacher deck.",
@@ -536,6 +759,7 @@ export const runContentQa = (params: {
       pushIssue(issues, {
         code: "generic_hook",
         severity: "warn",
+        layer: "content",
         key,
         slide,
         message: "Hook is formulaic and does not open a specific problem.",
@@ -548,6 +772,7 @@ export const runContentQa = (params: {
       pushIssue(issues, {
         code: "large_block_too_short",
         severity: "warn",
+        layer: "content",
         key,
         slide,
         message: `Large text block is too short; expected at least ${largeBlock.chars} chars.`,
@@ -561,6 +786,7 @@ export const runContentQa = (params: {
       pushIssue(issues, {
         code: "required_count_mismatch",
         severity: "error",
+        layer: "format",
         key,
         slide,
         message: `Expected exactly ${exactCount} lines, got ${bulletLines.length}.`,
@@ -569,6 +795,7 @@ export const runContentQa = (params: {
       pushIssue(issues, {
         code: "weak_exact_count_instruction",
         severity: "error",
+        layer: "format",
         key,
         slide,
         message: `Prompt/budget says exactly ${exactCount}, but output has ${bulletLines.length}.`,
@@ -580,6 +807,7 @@ export const runContentQa = (params: {
       pushIssue(issues, {
         code: "too_few_bullets",
         severity: "warn",
+        layer: "content",
         key,
         slide,
         message: `Expected at least ${largeBlock.bullets} bullet lines.`,
@@ -593,6 +821,7 @@ export const runContentQa = (params: {
         pushIssue(issues, {
           code: "bullet_too_short",
           severity: "warn",
+          layer: "content",
           key,
           slide,
           message: `${shortBullets.length} bullet lines are below the expected density.`,
@@ -606,6 +835,7 @@ export const runContentQa = (params: {
       pushIssue(issues, {
         code: "bare_fact_without_meaning",
         severity: "warn",
+        layer: "content",
         key,
         slide,
         message: "Fact is stated without explaining why it matters.",
@@ -618,6 +848,7 @@ export const runContentQa = (params: {
       pushIssue(issues, {
         code: "overclaim_risk",
         severity: "warn",
+        layer: "content",
         key,
         slide,
         message: "Text uses a risky absolute claim; prefer cautious wording unless sourced.",
@@ -630,6 +861,7 @@ export const runContentQa = (params: {
       pushIssue(issues, {
         code: "chronology_risk",
         severity: "warn",
+        layer: "content",
         key,
         slide,
         message: "Chronology may be oversimplified or misleading; use a range or avoid precise dating.",
@@ -643,6 +875,7 @@ export const runContentQa = (params: {
         pushIssue(issues, {
           code: "weak_learning_verbs",
           severity: "warn",
+          layer: "content",
           key,
           slide,
           message: "Learning goal uses weak formal verbs instead of explanation/proof/comparison verbs.",
@@ -655,6 +888,7 @@ export const runContentQa = (params: {
       pushIssue(issues, {
         code: "comma_only_keywords",
         severity: "warn",
+        layer: "content",
         key,
         slide,
         message: "Keywords block is only a comma-separated word list and carries little teaching value.",
@@ -666,6 +900,7 @@ export const runContentQa = (params: {
       pushIssue(issues, {
         code: "overloaded_keywords",
         severity: "warn",
+        layer: "content",
         key,
         slide,
         message: "Keywords block is overloaded for a presentation slide.",
@@ -677,6 +912,7 @@ export const runContentQa = (params: {
       pushIssue(issues, {
         code: "generic_sources",
         severity: "warn",
+        layer: "content",
         key,
         slide,
         message: "Sources look generic or mismatched to the topic.",
@@ -691,6 +927,7 @@ export const runContentQa = (params: {
         pushIssue(issues, {
           code: "memory_only_quiz",
           severity: "warn",
+          layer: "content",
           key,
           slide,
           message: "Quiz question checks isolated memory instead of understanding.",
@@ -708,6 +945,7 @@ export const runContentQa = (params: {
         pushIssue(issues, {
           code: "repeated_line",
           severity: "info",
+          layer: "content",
           key,
           slide,
           message: `Line repeats content already used in ${previousKey}.`,
@@ -730,6 +968,7 @@ export const runContentQa = (params: {
       pushIssue(issues, {
         code: "unsupported_goal_promise",
         severity: "warn",
+        layer: "content",
         key: "s2_goals",
         slide: 2,
         message: "Goals promise a specific analysis that is not supported by later slides.",
@@ -742,6 +981,7 @@ export const runContentQa = (params: {
     pushIssue(issues, {
       code: "duplicated_goal_plan",
       severity: "warn",
+      layer: "plan",
       key: "s2_plan",
       slide: 2,
       message: "Goals and plan duplicate each other instead of separating what to understand and how to get there.",
@@ -754,6 +994,7 @@ export const runContentQa = (params: {
     pushIssue(issues, {
       code: "required_count_mismatch",
       severity: "error",
+      layer: "format",
       slide: 9,
       message: `Expected exactly 3 quiz questions, got ${quizKeys.length}.`,
       sample: quizKeys.join(", "),
@@ -761,6 +1002,7 @@ export const runContentQa = (params: {
     pushIssue(issues, {
       code: "weak_exact_count_instruction",
       severity: "error",
+      layer: "format",
       slide: 9,
       message: `Prompt/budget says exactly 3 quiz questions, but output has ${quizKeys.length}.`,
       sample: quizKeys.join(", "),
@@ -768,6 +1010,9 @@ export const runContentQa = (params: {
   }
 
   assessNarrative({ fills: params.fills, plan, issues });
+  if (params.deckPlan) {
+    assessDeckPlanAdherence({ deckPlan: params.deckPlan, fills: params.fills, issues });
+  }
 
   const penalty = issues.reduce((sum, issue) => sum + issueWeight(issue.severity), 0);
   const score = Math.max(0, Math.min(100, 100 - penalty));
@@ -792,6 +1037,7 @@ export const runContentQa = (params: {
     issues,
     stats: {
       keysChecked: params.fillKeys.length,
+      deckPlanPresent: Boolean(params.deckPlan),
       missingCount: issues.filter((issue) => issue.code === "missing_field").length,
       genericTitleCount: issues.filter((issue) => issue.code === "generic_title" || issue.code === "generic_hook").length,
       shortLargeBlockCount: issues.filter((issue) => issue.code === "large_block_too_short").length,
@@ -800,6 +1046,8 @@ export const runContentQa = (params: {
       narrativeIssueCount: issues.filter((issue) => narrativeCodes.has(issue.code)).length,
       overclaimRiskCount: issues.filter((issue) => issue.code === "overclaim_risk" || issue.code === "conclusion_overclaim").length,
       chronologyRiskCount: issues.filter((issue) => issue.code === "chronology_risk").length,
+      formatIssueCount: issues.filter((issue) => issue.layer === "format").length,
+      planIssueCount: issues.filter((issue) => issue.layer === "plan").length,
       repeatedLineCount,
       placeholderLeakCount: issues.filter((issue) => issue.code === "placeholder_leak").length,
     },

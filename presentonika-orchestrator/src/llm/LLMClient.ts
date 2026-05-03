@@ -1,6 +1,7 @@
 import type { ImagePlanV1 } from "../images/imagePlan";
 import type { Citation } from "../rag/formatContext";
 import type { NarrativePlanContext } from "../content/narrativePlan";
+import type { DeckPlan } from "../deckPlan";
 
 export type LLMGenerateInput = {
   presentationId: number | string;
@@ -12,6 +13,7 @@ export type LLMGenerateInput = {
   chosenVariantsPreview?: Record<string, string>;
   mode?: "fills" | "targeted_fills" | "image_prompts";
   strictKeysRequired?: boolean;
+  deckPlan?: DeckPlan;
   narrativePlan?: NarrativePlanContext;
   layoutContext?: Array<{
     slide: number;
