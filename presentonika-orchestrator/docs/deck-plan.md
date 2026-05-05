@@ -43,6 +43,7 @@ Response:
     "slides": [
       {
         "slide": 1,
+        "slideType": "cover",
         "role": "frame",
         "titleIntent": "Поставить главный вопрос и рамку урока.",
         "claim": "...",
@@ -121,6 +122,22 @@ curl -X POST "https://YOUR_ORCHESTRATOR/jobs" \
 ## 3. Behavior Without DeckPlan
 
 Existing `/jobs` requests still work. If `deckPlan` is absent, the worker builds a deterministic fallback plan and uses it for prompt context and diagnostics. It does not make a hidden planner LLM call inside `/jobs`.
+
+DeckPlan now owns the slide structure. Each slide should include a canonical `slideType` such as `cover`, `goals`, `hook`, `context`, `definition`, `bullets`, `comparison`, `twoCol`, `steps`, `timeline`, `examples`, `quiz`, `summary`, or `visual_explanation`. The layout engine selects layouts from that `slideType`; slide numbers no longer force `s8=examples`, `s9=quiz`, or `s10=summary`.
+
+When defining required counts, prefer `slot` plus `kind`:
+
+```json
+{
+  "slide": 7,
+  "slideType": "examples",
+  "requiredItems": [
+    { "slot": "examples", "kind": "examples", "count": 4, "exact": true }
+  ]
+}
+```
+
+The dynamic binder turns layout slots into keys like `s7_examples`, `s8_q1`, or `s9_summary` based on the actual slide number and selected layout slots.
 
 ## 4. Cost Controls
 

@@ -14,5 +14,6 @@ export const runLayoutsWorkerSmokeTests = async (): Promise<void> => {
   process.env.LAYOUT_ENGINE_DIR = prev;
 
   assert.equal(compiled.diagnostics.mode, "builtins");
+  assert.equal(compiled.diagnostics.dynamicPlanUsed, true);
   assert.equal(compiled.diagnostics.selectedLayouts.length, 10);
 };

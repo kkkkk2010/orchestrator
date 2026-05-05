@@ -48,6 +48,7 @@ export const runNarrativePlanTests = (): void => {
   assert.ok(prompt.includes("Examples must support the thesis"));
   assert.ok(prompt.includes("Factual caution"));
   assert.ok(prompt.includes("Exact counts are mandatory"));
-  assert.ok(prompt.includes("s8_examples=4"));
+  assert.ok(prompt.includes("actual dynamic keys"));
+  assert.ok(prompt.includes("s8_examples"));
   assert.ok(prompt.includes("Keep keywords compact"));
 };

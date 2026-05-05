@@ -32,6 +32,7 @@ import { aggregateFillCounts, buildBatches } from "./llm/batching";
 import { calcLlmRetryDelayMs, isRetryableLlmError } from "./llm/retry";
 import { applyTypographyStandards, autoFitText, dedupeBulletLines, generateLocalFallback, generateLocalFallbackBullets, normalizeText, resolveThemeTypography, styleRoleByKey } from "./templates/textPostprocess";
 import { compileLayoutPresentation } from "./layouts";
+import type { LayoutEngineDiagnostics } from "./layouts/types";
 import { runContentQa } from "./content/contentQa";
 import { buildNarrativePlan, sourceFallbackForTopic } from "./content/narrativePlan";
 import { buildDeterministicDeckPlan } from "./deckPlan";
@@ -87,9 +88,13 @@ const slideRole = (slideType: string): string => {
     case "cover": return "frame the topic and why it matters";
     case "goals": return "set goals and a realistic lesson path";
     case "hook": return "create curiosity with question, hint, fact, meaning";
+    case "context": return "explain context and why it matters";
     case "definition": return "explain context, role, and key terms";
     case "bullets": return "teach facts with meaning and consequences";
+    case "visual_explanation": return "explain a mechanism with concise visual support";
+    case "comparison": return "compare two sides, periods, or ideas";
     case "twoCol": return "compare two sides, periods, or ideas";
+    case "timeline": return "show sequence and significance of stages";
     case "steps": return "show sequence and significance of stages";
     case "examples": return "give examples and what they demonstrate";
     case "quiz": return "check understanding";
@@ -100,7 +105,7 @@ const slideRole = (slideType: string): string => {
 
 const slideDensity = (slideType: string): "low" | "medium" | "high" => {
   if (slideType === "cover" || slideType === "quiz") return "low";
-  if (slideType === "bullets" || slideType === "examples" || slideType === "summary") return "high";
+  if (slideType === "bullets" || slideType === "examples" || slideType === "summary" || slideType === "visual_explanation") return "high";
   return "medium";
 };
 const DEDUP_ENABLED = process.env.DEDUP_ENABLED !== "false";
@@ -268,17 +273,35 @@ const worker = new Worker(
     await job.updateProgress(60);
     jobLogger.info({ stage: "parse_doc" }, "progress updated");
 
-    const preVariantDoc = JSON.parse(JSON.stringify(doc)) as unknown;
+    let preVariantDoc = JSON.parse(JSON.stringify(doc)) as unknown;
 
     normalizePlaceholders(doc);
-    const initialPlaceholderScan = extractPlaceholderLocations(doc);
-    const initialFillKeys = [...new Set(initialPlaceholderScan.locations.map((item) => item.key))];
-    const imageSlots = extractImageSlots(doc);
-    const slideCount = inferSlideCount(doc);
+    let initialPlaceholderScan = extractPlaceholderLocations(doc);
+    let initialFillKeys = [...new Set(initialPlaceholderScan.locations.map((item) => item.key))];
+    let imageSlots = extractImageSlots(doc);
+    let slideCount = inferSlideCount(doc);
+    const topic = typeof job.data?.topic === "string" ? job.data.topic : "";
+    const language = typeof job.data?.language === "string" ? job.data.language : null;
+    const providedDeckPlan = job.data?.deckPlan;
+    const deckPlan = providedDeckPlan ?? buildDeterministicDeckPlan({
+      topic,
+      language: language || "ru",
+      slideCount,
+      presentationType: "auto",
+    });
+    const deckPlanDiagnostics = {
+      present: Boolean(providedDeckPlan),
+      source: deckPlan.source,
+      mode: providedDeckPlan ? "provided" : "deterministic_fallback",
+      slideCount: deckPlan.slideCount,
+      presentationType: deckPlan.presentationType,
+      dynamicPlanUsed: true,
+      slideTypes: deckPlan.slides.map((slide: { slide: number; slideType: string; role: string }) => ({ slide: slide.slide, slideType: slide.slideType, role: slide.role })),
+    };
     mark("parse_doc");
 
-    if (slideCount > MAX_SLIDES) {
-      throw new Error(`TooManySlides: ${slideCount} > ${MAX_SLIDES}`);
+    if (Math.max(slideCount, deckPlan.slideCount) > MAX_SLIDES) {
+      throw new Error(`TooManySlides: ${Math.max(slideCount, deckPlan.slideCount)} > ${MAX_SLIDES}`);
     }
 
     const ragEnabledForJob = RAG_ENABLED;
@@ -412,10 +435,20 @@ const worker = new Worker(
     }
 
     const map = await readThemeMap(themeId);
-    let layoutEngineDiagnostics = {
+    let layoutEngineDiagnostics: LayoutEngineDiagnostics = {
       enabled: LAYOUT_ENGINE_ENABLED,
       mode: "legacy_fallback" as "catalog" | "builtins" | "legacy_fallback",
-      selectedLayouts: [] as Array<{ slide: number; slideType: string; layoutId: string; source: "layouts-local" | "layouts" | "builtin"; hadFallback: boolean }>,
+      dynamicPlanUsed: true,
+      deckPlanSlideCount: deckPlan.slideCount,
+      compiledSlideTypes: [],
+      fallbackSlideTypeMappings: [],
+      fallbackSlotInferences: [],
+      unsupportedSlideTypes: [] as string[],
+      dynamicBindings: [] as Array<{ slide: number; slotName: string; fillKey: string }>,
+      missingSlotBindings: [] as string[],
+      duplicateFillKeys: [] as string[],
+      legacyEmergencyFallbackUsed: !LAYOUT_ENGINE_ENABLED,
+      selectedLayouts: [],
       missingLayoutTypes: [] as string[],
       slotBindingWarnings: [] as string[],
       mergedAssetsCount: 0,
@@ -429,11 +462,20 @@ const worker = new Worker(
           jobId,
           variation: LAYOUT_ENGINE_VARIATION,
           legacyTemplateZipPath: templatePath,
+          deckPlan,
+          topic,
+          language: language || "ru",
         });
         (doc as Record<string, unknown>).slides = ((compiled.doc as Record<string, unknown>).slides || []) as unknown[];
         templatePath = compiled.templateZipPath;
         layoutEngineDiagnostics = compiled.diagnostics;
         layoutIds = compiled.layoutIds;
+        normalizePlaceholders(doc);
+        initialPlaceholderScan = extractPlaceholderLocations(doc);
+        initialFillKeys = [...new Set(initialPlaceholderScan.locations.map((item) => item.key))];
+        imageSlots = extractImageSlots(doc);
+        slideCount = inferSlideCount(doc);
+        preVariantDoc = JSON.parse(JSON.stringify(doc)) as unknown;
 
         const mapSlides = ((map as Record<string, unknown>).slides && typeof (map as Record<string, unknown>).slides === "object"
           ? (map as Record<string, unknown>).slides
@@ -450,6 +492,7 @@ const worker = new Worker(
         }
         jobLogger.warn({ err: error }, "layout engine failed, fallback to legacy template pipeline");
         layoutEngineDiagnostics.mode = "legacy_fallback";
+        layoutEngineDiagnostics.legacyEmergencyFallbackUsed = true;
       }
     }
     const debugFillsRaw = job.data?.debug?.fills;
@@ -466,22 +509,6 @@ const worker = new Worker(
     const normalizedAfterVariants = normalizePlaceholders(doc);
     const placeholderScan = extractPlaceholderLocations(doc);
     const fillKeys = [...new Set(placeholderScan.locations.map((item) => item.key))];
-    const topic = typeof job.data?.topic === "string" ? job.data.topic : "";
-    const language = typeof job.data?.language === "string" ? job.data.language : null;
-    const providedDeckPlan = job.data?.deckPlan;
-    const deckPlan = providedDeckPlan ?? buildDeterministicDeckPlan({
-      topic,
-      language: language || "ru",
-      slideCount,
-      presentationType: "auto",
-    });
-    const deckPlanDiagnostics = {
-      present: Boolean(providedDeckPlan),
-      source: deckPlan.source,
-      mode: providedDeckPlan ? "provided" : "deterministic_fallback",
-      slideCount: deckPlan.slideCount,
-      presentationType: deckPlan.presentationType,
-    };
     const narrativePlan = buildNarrativePlan({
       topic,
       selectedLayouts: layoutEngineDiagnostics.selectedLayouts,

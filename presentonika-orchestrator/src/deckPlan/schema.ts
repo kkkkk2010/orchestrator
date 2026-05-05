@@ -14,21 +14,91 @@ export const deckPlanPresentationTypeSchema = z.enum([
 
 export const deckPlanSourceSchema = z.enum(["llm", "deterministic", "user_edited"]);
 
-export const deckPlanSlideRoleSchema = z.enum([
-  "frame",
-  "route",
-  "problem_hook",
+export const deckPlanSlideTypeSchema = z.enum([
+  "cover",
+  "goals",
+  "hook",
   "context",
-  "evidence_mechanism",
+  "definition",
+  "bullets",
   "comparison",
-  "development_over_time",
-  "examples_as_evidence",
-  "check_understanding",
-  "conclusion",
+  "twoCol",
+  "steps",
+  "timeline",
+  "examples",
+  "quiz",
+  "summary",
+  "visual_explanation",
 ]);
+
+export const deckPlanSlideRoleSchema = z.string().min(1).max(80);
+
+const canonicalSlideTypeAliases: Record<string, z.infer<typeof deckPlanSlideTypeSchema>> = {
+  cover: "cover",
+  frame: "cover",
+  title: "cover",
+  goals: "goals",
+  goal: "goals",
+  route: "goals",
+  plan: "goals",
+  hook: "hook",
+  problem_hook: "hook",
+  problem: "hook",
+  context: "context",
+  definition: "definition",
+  terms: "definition",
+  evidence_mechanism: "bullets",
+  mechanism: "bullets",
+  mechanisms: "bullets",
+  bullets: "bullets",
+  facts: "bullets",
+  visual_explanation: "visual_explanation",
+  visual: "visual_explanation",
+  comparison: "comparison",
+  compare: "comparison",
+  twocol: "twoCol",
+  two_col: "twoCol",
+  two_column: "twoCol",
+  "two-column": "twoCol",
+  steps: "steps",
+  step: "steps",
+  development_over_time: "timeline",
+  timeline: "timeline",
+  chronology: "timeline",
+  examples_as_evidence: "examples",
+  examples: "examples",
+  example: "examples",
+  quiz: "quiz",
+  questions: "quiz",
+  check_understanding: "quiz",
+  reflection: "summary",
+  conclusion: "summary",
+  summary: "summary",
+  homework: "summary",
+};
+
+export const normalizeDeckPlanSlideType = (value: unknown, fallbackContext?: unknown): z.infer<typeof deckPlanSlideTypeSchema> | undefined => {
+  const direct = typeof value === "string" ? value.trim() : "";
+  const normalized = direct.replace(/[\s-]+/g, "_").toLowerCase();
+  if (normalized && canonicalSlideTypeAliases[normalized]) return canonicalSlideTypeAliases[normalized];
+  if (direct === "twoCol") return "twoCol";
+
+  const context = typeof fallbackContext === "string" ? fallbackContext.toLowerCase() : "";
+  if (/quiz|question|проверк|вопрос/.test(context)) return "quiz";
+  if (/example|пример/.test(context)) return "examples";
+  if (/timeline|chronolog|этап|последователь|хронолог/.test(context)) return "timeline";
+  if (/compare|comparison|сравн/.test(context)) return "comparison";
+  if (/goal|route|plan|цель|маршрут|план/.test(context)) return "goals";
+  if (/hook|problem|парадокс|проблем|интриг/.test(context)) return "hook";
+  if (/summary|conclusion|итог|вывод|домаш/.test(context)) return "summary";
+  if (/context|definition|контекст|определ|термин/.test(context)) return "context";
+  if (/visual|image|diagram|map|схем|карт|изображ/.test(context)) return "visual_explanation";
+  return undefined;
+};
 
 export const deckPlanRequiredItemSchema = z.object({
   key: z.string().min(1).optional(),
+  slot: z.string().min(1).max(80).optional(),
   kind: z.enum(["bullets", "examples", "questions", "terms", "steps", "summary", "route_items"]),
   count: z.number().int().min(1).max(12),
   exact: z.boolean().default(true),
@@ -42,8 +112,21 @@ export const deckPlanVisualSuggestionSchema = z.object({
 
 const requiredItemsSchema = z.preprocess((value) => value ?? [], z.array(deckPlanRequiredItemSchema).max(8));
 
-export const deckPlanSlideSchema = z.object({
+export const deckPlanSlideSchema = z.preprocess((value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const row = value as Record<string, unknown>;
+  const requiredItems = Array.isArray(row.requiredItems) ? row.requiredItems : [];
+  const requiredText = requiredItems.map((item) => {
+    if (!item || typeof item !== "object") return "";
+    const record = item as Record<string, unknown>;
+    return [record.slot, record.kind, record.key, record.description].filter((part): part is string => typeof part === "string").join(" ");
+  }).join(" ");
+  const fallbackText = [row.role, row.titleIntent, row.claim, requiredText].filter((part): part is string => typeof part === "string").join(" ");
+  const slideType = normalizeDeckPlanSlideType(row.slideType, fallbackText) || "bullets";
+  return { ...row, slideType };
+}, z.object({
   slide: z.number().int().min(1).max(50),
+  slideType: deckPlanSlideTypeSchema,
   role: deckPlanSlideRoleSchema,
   titleIntent: z.string().min(1).max(180),
   claim: z.string().min(1).max(420),
@@ -54,7 +137,7 @@ export const deckPlanSlideSchema = z.object({
   visualSuggestions: z.array(deckPlanVisualSuggestionSchema).max(8).default([]),
   relationToPrevious: z.string().max(240).optional(),
   relationToNext: z.string().max(240).optional(),
-});
+}));
 
 export const deckPlanSchema = z.object({
   version: z.literal(1),
@@ -113,6 +196,7 @@ export const createPlanRequestSchema = z.object({
 
 export type DeckPlanPresentationType = z.infer<typeof deckPlanPresentationTypeSchema>;
 export type DeckPlanSource = z.infer<typeof deckPlanSourceSchema>;
+export type DeckPlanSlideType = z.infer<typeof deckPlanSlideTypeSchema>;
 export type DeckPlanSlideRole = z.infer<typeof deckPlanSlideRoleSchema>;
 export type DeckPlanRequiredItem = z.infer<typeof deckPlanRequiredItemSchema>;
 export type DeckPlanVisualSuggestion = z.infer<typeof deckPlanVisualSuggestionSchema>;

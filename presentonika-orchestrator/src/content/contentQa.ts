@@ -40,6 +40,10 @@ const slideFromKey = (key: string): number | undefined => {
   return match ? Number.parseInt(match[1], 10) : undefined;
 };
 
+const slotFromKey = (key: string): string => key.match(/^s\d+_(.+)$/i)?.[1]?.toLowerCase() || key.toLowerCase();
+
+const dynamicFillKey = (slide: number, slot: string): string => `s${slide}_${slot.toLowerCase().replace(/[^a-z0-9_]+/gi, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "")}`;
+
 const compact = (value: string): string => value.replace(/\s+/g, " ").trim();
 
 const linesOf = (value: string): string[] => value
@@ -413,16 +417,20 @@ const countForRequiredItem = (params: {
   fills: Record<string, string>;
   slide: number;
   key?: string;
+  slot?: string;
   kind: string;
 }): { count: number; sample: string } => {
-  if (params.key && typeof params.fills[params.key] === "string") {
-    const value = params.fills[params.key];
+  const candidateKey = params.key || (params.slot ? dynamicFillKey(params.slide, params.slot) : undefined);
+  if (candidateKey && typeof params.fills[candidateKey] === "string") {
+    const value = params.fills[candidateKey];
     return { count: linesOf(value).length, sample: value.slice(0, 160) };
   }
 
   if (params.kind === "questions") {
     const keys = Object.keys(params.fills).filter((key) => new RegExp(`^s${params.slide}_q\\d+$`, "i").test(key) && params.fills[key]?.trim());
-    return { count: keys.length, sample: keys.join(", ") };
+    const questionsKey = dynamicFillKey(params.slide, "questions");
+    const questionLines = typeof params.fills[questionsKey] === "string" ? linesOf(params.fills[questionsKey]).length : 0;
+    return { count: questionLines || keys.length, sample: questionLines ? params.fills[questionsKey].slice(0, 160) : keys.join(", ") };
   }
 
   const slideText = Object.entries(params.fills)
@@ -448,6 +456,7 @@ const assessDeckPlanAdherence = (params: {
         fills,
         slide: slide.slide,
         key: item.key,
+        slot: item.slot,
         kind: item.kind,
       });
       if (counted.count !== item.count) {
@@ -455,7 +464,7 @@ const assessDeckPlanAdherence = (params: {
           code: "required_count_mismatch",
           severity: "error",
           layer: "plan",
-          key: item.key,
+          key: item.key || (item.slot ? dynamicFillKey(slide.slide, item.slot) : undefined),
           slide: slide.slide,
           message: `DeckPlan requires exactly ${item.count} ${item.kind}, got ${counted.count}.`,
           sample: counted.sample,
@@ -717,6 +726,7 @@ export const runContentQa = (params: {
   for (const key of params.fillKeys) {
     const value = typeof params.fills[key] === "string" ? params.fills[key].trim() : "";
     const normalizedKey = key.toLowerCase();
+    const slot = slotFromKey(key);
     const slide = slideFromKey(key);
 
     if (!value) {
@@ -755,7 +765,9 @@ export const runContentQa = (params: {
       });
     }
 
-    if (slide === 3 && genericHookPatterns.some((pattern) => pattern.test(value))) {
+    const deckPlanSlide = params.deckPlan?.slides.find((item) => item.slide === slide);
+
+    if ((slide === 3 || deckPlanSlide?.slideType === "hook") && genericHookPatterns.some((pattern) => pattern.test(value))) {
       pushIssue(issues, {
         code: "generic_hook",
         severity: "warn",
@@ -869,7 +881,7 @@ export const runContentQa = (params: {
       });
     }
 
-    if (normalizedKey === "s2_goals") {
+    if (normalizedKey === "s2_goals" || slot === "goals") {
       const weakLine = bulletLines.find((line) => weakLearningVerbs.some((verb) => normalize(line).includes(normalize(verb))));
       if (weakLine) {
         pushIssue(issues, {
@@ -920,7 +932,7 @@ export const runContentQa = (params: {
       });
     }
 
-    if (slide === 9 && /_q\d+$/i.test(normalizedKey)) {
+    if ((deckPlanSlide?.slideType === "quiz" || slot === "questions" || /_q\d+$/i.test(normalizedKey)) && (slot === "questions" || /_q\d+$/i.test(normalizedKey))) {
       const memoryOnly = memoryOnlyQuizPatterns.some((pattern) => pattern.test(value));
       const understanding = understandingQuizPatterns.some((pattern) => pattern.test(value));
       if (memoryOnly && !understanding) {
@@ -932,6 +944,21 @@ export const runContentQa = (params: {
           slide,
           message: "Quiz question checks isolated memory instead of understanding.",
           sample: value,
+        });
+      }
+    }
+
+    if (slot === "examples") {
+      const exampleLines = linesOf(value);
+      if (exampleLines.length > 0 && exampleLines.filter((line) => includesAny(line, evidenceHints)).length < Math.ceil(exampleLines.length / 2)) {
+        pushIssue(issues, {
+          code: "examples_not_argumentative",
+          severity: "warn",
+          layer: "content",
+          key,
+          slide,
+          message: "Examples should explicitly work as evidence for the thesis.",
+          sample: value.slice(0, 160),
         });
       }
     }

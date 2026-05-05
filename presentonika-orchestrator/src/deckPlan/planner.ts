@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { parseDeepseekJson } from "../llm/parseDeepseekJson";
 import { buildDeterministicDeckPlan } from "./buildDeckPlan";
-import { createPlanRequestSchema, deckPlanSchema, type CreatePlanRequest, type DeckPlan } from "./schema";
+import { createPlanRequestSchema, deckPlanSchema, normalizeDeckPlanSlideType, type CreatePlanRequest, type DeckPlan } from "./schema";
 
 export type PlannerNormalizationDiagnostics = {
   applied: boolean;
@@ -9,6 +9,7 @@ export type PlannerNormalizationDiagnostics = {
   movedVisualSuggestions: number;
   droppedInvalidRequiredItems: number;
   normalizedNullOptionals: number;
+  normalizedSlideTypes: number;
   warnings: string[];
 };
 
@@ -51,11 +52,15 @@ const buildPlannerPrompt = (request: CreatePlanRequest): string => {
     "Return ONLY JSON for a DeckPlan object. No markdown.",
     "DeckPlan is a scenario contract, not slide text and not UI copy.",
     "Required shape: version, topic, subject?, grade?, language, slideCount, presentationType, centralQuestion, thesis, audience?, slides[], globalRules[], source, createdAt.",
-    "Each slide item: slide, role, titleIntent, claim, mustInclude[], mustAvoid[], requiredItems[], expectedEvidence[], relationToPrevious?, relationToNext?.",
+    "Each slide item: slide, slideType, role, titleIntent, claim, mustInclude[], mustAvoid[], requiredItems[], expectedEvidence[], visualSuggestions[], relationToPrevious?, relationToNext?.",
+    "slideType MUST be one of: cover, goals, hook, context, definition, bullets, comparison, twoCol, steps, timeline, examples, quiz, summary, visual_explanation.",
+    "Create a dynamic sequence for the topic. Do not force examples to slide 8, quiz to slide 9, or summary to slide 10; choose the order that best serves the lesson.",
+    "Normally start with cover/frame, put goals/route near the beginning, and place summary/conclusion near the end; include quiz/check near the end only when useful or requested.",
     "Do not use null anywhere. If an optional value such as relationToPrevious/relationToNext is absent, omit the field.",
     "titleIntent and claim must always be non-empty strings.",
     "Use roles: frame, route, problem_hook, context, evidence_mechanism, comparison, development_over_time, examples_as_evidence, check_understanding, conclusion.",
-    "requiredItems item: {key?, kind, count, exact, description?}; kind MUST be one of: bullets, examples, questions, terms, steps, summary, route_items.",
+    "requiredItems item: {slot?, key?, kind, count, exact, description?}; slot should match a layout slot such as title, goals, plan, bullets, examples, questions, summary, steps.",
+    "requiredItems.kind MUST be one of: bullets, examples, questions, terms, steps, summary, route_items.",
     "Do NOT put map/image/diagram/table/chart into requiredItems. Put visual ideas into visualSuggestions: [{kind, description}] where kind is map, diagram, table, image, chart, timeline, or other.",
     "Make a coherent route: central question -> context -> evidence/mechanism -> examples -> understanding check -> conclusion.",
     "Avoid 10 independent overview slides, repeated thesis, fake claims, overclaims, and unsupported promises.",
@@ -133,6 +138,7 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
     movedVisualSuggestions: 0,
     droppedInvalidRequiredItems: 0,
     normalizedNullOptionals: 0,
+    normalizedSlideTypes: 0,
     warnings: [],
   };
 
@@ -208,6 +214,12 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
     const claimFallback = ru
       ? `Продвинуть главный вопрос на слайде ${slideNo}.`
       : `Advance the central question on slide ${slideNo}.`;
+    const slideTypeContext = [slide.role, slide.titleIntent, slide.claim].filter((part): part is string => typeof part === "string").join(" ");
+    const normalizedSlideType = normalizeDeckPlanSlideType(slide.slideType, slideTypeContext) || "bullets";
+    if (typeof slide.slideType !== "string" || slide.slideType !== normalizedSlideType) {
+      normalization.normalizedSlideTypes += 1;
+      normalization.warnings.push(`slide ${slideNo}: normalized slideType ${typeof slide.slideType === "string" ? slide.slideType : "missing"} -> ${normalizedSlideType}`);
+    }
     const visualSuggestions: unknown[] = [];
     const rawVisualSuggestions = Array.isArray(slide.visualSuggestions) ? slide.visualSuggestions : [];
     for (const suggestionRaw of rawVisualSuggestions) {
@@ -263,6 +275,7 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
         ...item,
         kind: normalizedKind,
         key: normalizeOptionalString(item.key, `slides.${slideIndex}.requiredItems.key`, 120),
+        slot: normalizeOptionalString(item.slot, `slides.${slideIndex}.requiredItems.slot`, 80),
         description: normalizeOptionalString(item.description, `slides.${slideIndex}.requiredItems.description`, 240),
       };
       nextRequiredItems.push(Object.fromEntries(Object.entries(normalizedItem).filter(([, value]) => value !== undefined)));
@@ -270,6 +283,7 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
 
     const normalizedSlide = {
       ...slide,
+      slideType: normalizedSlideType,
       titleIntent: normalizeRequiredString(slide.titleIntent, `slides.${slideIndex}.titleIntent`, titleIntentFallback, 180),
       claim: normalizeRequiredString(slide.claim, `slides.${slideIndex}.claim`, claimFallback, 420),
       mustInclude: normalizeStringArray(slide.mustInclude, `slides.${slideIndex}.mustInclude`),
@@ -287,6 +301,7 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
     || normalization.movedVisualSuggestions > 0
     || normalization.droppedInvalidRequiredItems > 0
     || normalization.normalizedNullOptionals > 0
+    || normalization.normalizedSlideTypes > 0
     || normalization.warnings.length > 0;
   normalization.warnings = normalization.warnings.slice(0, 20);
 

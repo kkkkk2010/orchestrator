@@ -6,10 +6,12 @@ export {
   deckPlanPresentationTypeSchema,
   deckPlanRequiredItemSchema,
   deckPlanSchema,
+  deckPlanSlideTypeSchema,
   deckPlanSlideRoleSchema,
   deckPlanSlideSchema,
   deckPlanSourceSchema,
   deckPlanVisualSuggestionSchema,
+  normalizeDeckPlanSlideType,
 } from "./schema";
 export type {
   CreatePlanRequest,
@@ -17,6 +19,7 @@ export type {
   DeckPlanPresentationType,
   DeckPlanRequiredItem,
   DeckPlanSlide,
+  DeckPlanSlideType,
   DeckPlanSlideRole,
   DeckPlanSource,
   DeckPlanVisualSuggestion,

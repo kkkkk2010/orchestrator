@@ -30,6 +30,7 @@ export const runDeckPlanTests = async (): Promise<void> => {
   assert.ok(deckPlan.centralQuestion.length > 0);
   assert.ok(deckPlan.thesis.length > 0);
   assert.equal(deckPlan.slides.length, 10);
+  assert.equal(deckPlan.slides[7].slideType, "examples");
   assert.equal(deckPlan.slides[7].requiredItems[0].count, 4);
   assert.ok(deckPlan.slides[0].titleIntent.includes("главный вопрос"));
   assert.ok(deckPlan.slides[1].mustAvoid.some((value) => value.includes("слабые глаголы")));
@@ -83,7 +84,8 @@ export const runDeckPlanTests = async (): Promise<void> => {
         return { ...slide, requiredItems: [{ key: null, kind: "bullet", count: 5, exact: true, description: null }] };
       }
       if (slide.slide === 7) {
-        return { ...slide, requiredItems: [{ kind: "timeline", count: 4, exact: true, description: "текстовая последовательность этапов" }] };
+        const { slideType: _slideType, ...withoutSlideType } = slide;
+        return { ...withoutSlideType, role: "development_over_time", requiredItems: [{ kind: "timeline", count: 4, exact: true, description: "текстовая последовательность этапов" }] };
       }
       if (slide.slide === 9) {
         return { ...slide, requiredItems: [{ kind: "question", count: 3, exact: true }] };
@@ -103,6 +105,7 @@ export const runDeckPlanTests = async (): Promise<void> => {
   assert.equal(normalized.deckPlan.slides[4].requiredItems[0].key, undefined);
   assert.equal(normalized.deckPlan.slides[4].requiredItems[0].description, undefined);
   assert.equal(normalized.deckPlan.slides[6].requiredItems[0].kind, "steps");
+  assert.equal(normalized.deckPlan.slides[6].slideType, "timeline");
   assert.equal(normalized.deckPlan.slides[8].requiredItems[0].kind, "questions");
   assert.equal(normalized.deckPlan.slides[9].relationToNext, undefined);
   assert.equal(normalized.deckPlan.slides[9].claim.length > 0, true);
@@ -112,6 +115,7 @@ export const runDeckPlanTests = async (): Promise<void> => {
   assert.equal(normalized.normalization.normalizedKindAliases, 3);
   assert.equal(normalized.normalization.movedVisualSuggestions, 4);
   assert.ok(normalized.normalization.normalizedNullOptionals >= 7);
+  assert.ok(normalized.normalization.normalizedSlideTypes >= 1);
   assert.ok(normalized.normalization.warnings.some((warning) => warning.includes("bullet -> bullets")));
   assert.ok(normalized.normalization.warnings.some((warning) => warning.includes("relationToPrevious")));
   assert.throws(() => normalizeLlmDeckPlanCandidate({ ...rawLlmPlan, centralQuestion: "", slides: [] }, planRequest));
@@ -178,6 +182,26 @@ export const runDeckPlanTests = async (): Promise<void> => {
   assert.ok(prompt.includes(deckPlan.thesis));
   assert.ok(prompt.includes("current batch DeckPlan contract"));
   assert.ok(prompt.includes("s8_examples:exactly 4"));
+
+  const dynamicPrompt = buildUserPrompt({
+    presentationId: 1,
+    themeId: "teacher-dark",
+    topic: "Османская империя",
+    language: "ru",
+    fillKeys: ["s7_examples"],
+    imagePlan: { ...imagePlan, topic: "Османская империя" },
+    deckPlan: {
+      ...deckPlan,
+      slides: deckPlan.slides.map((slide) => slide.slide === 7
+        ? { ...slide, slideType: "examples", requiredItems: [{ slot: "examples", kind: "examples", count: 4, exact: true }] }
+        : slide),
+    },
+    layoutContext: [
+      { slide: 7, slideType: "examples", layoutId: "edu-examples-a", role: "examples", textDensity: "high" },
+    ],
+  });
+  assert.ok(dynamicPrompt.includes("s7_examples"));
+  assert.ok(dynamicPrompt.includes("ровно 4 examples"));
 
   const previousPlanEnabled = process.env.PLAN_GENERATION_ENABLED;
   const previousPlanLlm = process.env.PLAN_LLM_ENABLED;

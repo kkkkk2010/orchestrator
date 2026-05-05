@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { runContentQa } from "../content/contentQa";
 import { buildNarrativePlan } from "../content/narrativePlan";
+import { buildDeterministicDeckPlan } from "../deckPlan";
 
 export const runContentQaTests = (): void => {
   const plan = buildNarrativePlan({ topic: "Александр Пушкин" });
@@ -130,4 +131,24 @@ export const runContentQaTests = (): void => {
     narrativePlan: plan,
   });
   assert.equal(cautiousReport.issues.some((issue) => issue.code === "overclaim_risk"), false);
+
+  const dynamicDeckPlan = buildDeterministicDeckPlan({
+    topic: "Османская империя",
+    language: "ru",
+    slideCount: 10,
+    presentationType: "auto",
+  });
+  dynamicDeckPlan.slides = dynamicDeckPlan.slides.map((slide) => slide.slide === 7
+    ? { ...slide, slideType: "examples", role: "examples_as_evidence", requiredItems: [{ slot: "examples", kind: "examples", count: 4, exact: true }] }
+    : slide);
+  const dynamicReport = runContentQa({
+    fills: {
+      s7_examples: "• Янычары показывают военную организацию.\n• Стамбул раскрывает роль столицы.\n• Торговые пути объясняют ресурсы.",
+    },
+    fillKeys: ["s7_examples"],
+    topic: "Османская империя",
+    deckPlan: dynamicDeckPlan,
+  });
+  const dynamicIssues = dynamicReport.issues.filter((issue) => issue.code === "required_count_mismatch");
+  assert.ok(dynamicIssues.some((issue) => issue.key === "s7_examples" && issue.slide === 7));
 };

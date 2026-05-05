@@ -1,5 +1,5 @@
 import { buildNarrativePlan, detectTopicKind, type TopicKind } from "../content/narrativePlan";
-import type { CreatePlanRequest, DeckPlan, DeckPlanPresentationType, DeckPlanRequiredItem, DeckPlanSlide, DeckPlanSlideRole } from "./schema";
+import type { CreatePlanRequest, DeckPlan, DeckPlanPresentationType, DeckPlanRequiredItem, DeckPlanSlide, DeckPlanSlideRole, DeckPlanSlideType } from "./schema";
 
 const roleBySlide: Record<number, DeckPlanSlideRole> = {
   1: "frame",
@@ -19,24 +19,40 @@ const requiredItemsForSlide = (slide: number, language: string): DeckPlanRequire
   switch (slide) {
     case 2:
       return [
-        { key: "s2_goals", kind: "bullets", count: 3, exact: true, description: ru ? "что ученики должны понять" : "what students should understand" },
-        { key: "s2_plan", kind: "route_items", count: 3, exact: true, description: ru ? "маршрут доказательства" : "route through the argument" },
+        { key: "s2_goals", slot: "goals", kind: "bullets", count: 3, exact: true, description: ru ? "что ученики должны понять" : "what students should understand" },
+        { key: "s2_plan", slot: "plan", kind: "route_items", count: 3, exact: true, description: ru ? "маршрут доказательства" : "route through the argument" },
       ];
     case 5:
-      return [{ key: "s5_bullets", kind: "bullets", count: 5, exact: true, description: ru ? "факт плюс значение" : "fact plus significance" }];
+      return [{ key: "s5_bullets", slot: "bullets", kind: "bullets", count: 5, exact: true, description: ru ? "факт плюс значение" : "fact plus significance" }];
     case 6:
       return [
-        { key: "s6_left_bullets", kind: "bullets", count: 3, exact: true },
-        { key: "s6_right_bullets", kind: "bullets", count: 3, exact: true },
+        { key: "s6_left_bullets", slot: "left_bullets", kind: "bullets", count: 3, exact: true },
+        { key: "s6_right_bullets", slot: "right_bullets", kind: "bullets", count: 3, exact: true },
       ];
     case 8:
-      return [{ key: "s8_examples", kind: "examples", count: 4, exact: true, description: ru ? "примеры как доказательство тезиса" : "examples as evidence for the thesis" }];
+      return [{ key: "s8_examples", slot: "examples", kind: "examples", count: 4, exact: true, description: ru ? "примеры как доказательство тезиса" : "examples as evidence for the thesis" }];
     case 9:
-      return [{ kind: "questions", count: 3, exact: true, description: ru ? "вопросы на понимание, а не только на память" : "questions that test understanding, not memory only" }];
+      return [{ slot: "questions", kind: "questions", count: 3, exact: true, description: ru ? "вопросы на понимание, а не только на память" : "questions that test understanding, not memory only" }];
     case 10:
-      return [{ key: "s10_summary", kind: "summary", count: 3, exact: true, description: ru ? "выводы, отвечающие на главный вопрос" : "conclusions that answer the central question" }];
+      return [{ key: "s10_summary", slot: "summary", kind: "summary", count: 3, exact: true, description: ru ? "выводы, отвечающие на главный вопрос" : "conclusions that answer the central question" }];
     default:
       return [];
+  }
+};
+
+const slideTypeForRole = (role: DeckPlanSlideRole): DeckPlanSlideType => {
+  switch (role) {
+    case "frame": return "cover";
+    case "route": return "goals";
+    case "problem_hook": return "hook";
+    case "context": return "definition";
+    case "evidence_mechanism": return "bullets";
+    case "comparison": return "twoCol";
+    case "development_over_time": return "steps";
+    case "examples_as_evidence": return "examples";
+    case "check_understanding": return "quiz";
+    case "conclusion": return "summary";
+    default: return "bullets";
   }
 };
 
@@ -120,6 +136,7 @@ const titleIntentForRole = (role: DeckPlanSlideRole, language: string): string =
     case "examples_as_evidence": return "Use examples as evidence for the thesis.";
     case "check_understanding": return "Check understanding of the central argument.";
     case "conclusion": return "Answer the central question without overclaiming.";
+    default: return "Advance the lesson scenario.";
   }
 };
 
@@ -138,6 +155,7 @@ export const buildDeterministicDeckPlan = (request: CreatePlanRequest, source: "
     const role = roleBySlide[slideNumber] || (slideNumber === slideCount ? "conclusion" : "evidence_mechanism");
     slides.push({
       slide: slideNumber,
+      slideType: slideTypeForRole(role),
       role,
       titleIntent: titleIntentForRole(role, language),
       claim: narrativeSlide?.focus || `Advance the central question on slide ${slideNumber}.`,

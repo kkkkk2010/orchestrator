@@ -33,6 +33,7 @@ const buildRagContext = (input: LLMGenerateInput): string => {
 
 const keyRule = (key: string): string => {
   const normalized = key.toLowerCase();
+  const slot = normalized.match(/^s\d+_(.+)$/)?.[1] || normalized;
   if (normalized === "s1_title") return "название темы, <=5 слов";
   if (normalized === "s1_subtitle") return "сильный подзаголовок, <=7 слов, не повторяй title";
   if (normalized === "s1_meta") return "1 смысловая рамка темы: что изучаем и почему это важно, 16-24 слова";
@@ -64,11 +65,70 @@ const keyRule = (key: string): string => {
   if (normalized === "s10_summary") return "ровно 3 вывода, каждая строка с •; ответь на centralQuestion осторожно, без абсолютов создал/первый/навсегда";
   if (normalized === "s10_homework") return "1 домашнее задание, практическое";
   if (normalized === "s10_sources") return "1 строка источников";
+  if (slot === "title") return "заголовок слайда, <=7 слов";
+  if (slot === "subtitle") return "подзаголовок, <=12 слов";
+  if (slot === "meta") return "1 смысловая рамка темы: что изучаем и почему это важно, 16-24 слова";
+  if (slot === "goals") return "учебные цели, каждая строка с •; используй сильные глаголы: объяснить, сравнить, доказать, связать";
+  if (slot === "plan") return "маршрут урока, каждая строка с •, без нумерации; план должен совпадать с DeckPlan";
+  if (slot === "bullets") return "пункты, каждая строка с •; факт + значение, избегай абсолютов";
+  if (slot === "examples") return "конкретные примеры, каждая строка с •; пример + как он доказывает тезис, не просто список";
+  if (slot === "questions") return "вопросы на понимание, каждая строка с •; проверяй причинно-следственные связи, а не только память";
+  if (/^q\d+$/.test(slot)) return "1 вопрос на понимание центральной линии, не только дата/имя";
+  if (slot === "summary") return "выводы, каждая строка с •; ответь на centralQuestion осторожно, без абсолютов";
+  if (slot === "homework") return "1 домашнее задание, практическое";
+  if (slot === "sources") return "1 строка источников";
+  if (/^step\d+$/.test(slot) || slot === "steps") return "этап: период/шаг + событие + значение; не давай грубую датировку, если не уверен";
+  if (slot === "left_bullets" || slot === "right_bullets") return "пункты колонки, каждая строка с •";
+  if (slot === "left_title" || slot === "right_title") return "название колонки, <=4 слов";
+  if (slot === "definition") return "объясни роль, значение или контекст темы, не словарной статьей";
+  if (slot === "keywords") return "4-5 компактных термина по центральной линии; без длинных определений";
   if (normalized.includes("title")) return "<=7 слов";
   if (normalized.includes("subtitle")) return "<=12 слов";
   if (normalized.includes("bullets")) return "до 5 пунктов, каждая строка с •";
   if (normalized.includes("sources")) return "1 строка источников";
   return "кратко, фактологично, без общих фраз";
+};
+
+const slideFromKey = (key: string): number | undefined => {
+  const match = key.match(/^s(\d+)_/i);
+  if (!match?.[1]) return undefined;
+  const slide = Number.parseInt(match[1], 10);
+  return Number.isFinite(slide) ? slide : undefined;
+};
+
+const slotFromKey = (key: string): string => key.match(/^s\d+_(.+)$/i)?.[1]?.toLowerCase() || key.toLowerCase();
+
+const itemMatchesKey = (slide: number, slot: string, key: string, item: NonNullable<LLMGenerateInput["deckPlan"]>["slides"][number]["requiredItems"][number]): boolean => {
+  if (item.key === key) return true;
+  if (item.slot && `s${slide}_${item.slot.toLowerCase()}` === key.toLowerCase()) return true;
+  if (item.slot?.toLowerCase() === slot) return true;
+  if (item.kind === "examples" && slot === "examples") return true;
+  if (item.kind === "questions" && (slot === "questions" || /^q\d+$/.test(slot))) return true;
+  if (item.kind === "bullets" && slot.includes("bullets")) return true;
+  if (item.kind === "summary" && slot === "summary") return true;
+  if (item.kind === "steps" && (slot === "steps" || /^step\d+$/.test(slot))) return true;
+  if (item.kind === "route_items" && slot === "plan") return true;
+  if (item.kind === "terms" && slot === "keywords") return true;
+  return false;
+};
+
+const deckPlanRuleForKey = (input: LLMGenerateInput, key: string): string => {
+  const slideNo = slideFromKey(key);
+  if (!slideNo || !input.deckPlan) return "";
+  const slide = input.deckPlan.slides.find((item) => item.slide === slideNo);
+  if (!slide) return "";
+  const slot = slotFromKey(key);
+  const item = slide.requiredItems.find((required) => itemMatchesKey(slideNo, slot, key, required));
+  const countRule = item
+    ? `${item.exact ? "ровно" : "примерно"} ${item.count} ${item.kind}`
+    : "";
+  const contract = [
+    `DeckPlan slide ${slideNo}: slideType=${slide.slideType}; role=${slide.role}; claim=${slide.claim}`,
+    countRule ? `Для ${key}: ${countRule}.` : "",
+    slide.mustInclude.length > 0 ? `Включи: ${slide.mustInclude.join(", ")}.` : "",
+    slide.mustAvoid.length > 0 ? `Избегай: ${slide.mustAvoid.join(", ")}.` : "",
+  ].filter(Boolean).join(" ");
+  return contract;
 };
 
 const slideContext = (keys: string[]): string => {
@@ -104,19 +164,19 @@ const deterministicDeckContext = (input: LLMGenerateInput): string => {
   const deckPlanSlides = deckPlan?.slides
     .map((slide) => {
       const required = slide.requiredItems.length > 0
-        ? ` required=${slide.requiredItems.map((item) => `${item.key || item.kind}:${item.exact ? "exactly " : ""}${item.count}`).join(",")}`
+        ? ` required=${slide.requiredItems.map((item) => `${item.key || item.slot || item.kind}:${item.exact ? "exactly " : ""}${item.count}`).join(",")}`
         : "";
-      return `${slide.slide}. role=${slide.role}; titleIntent=${slide.titleIntent}; claim=${slide.claim}; include=${slide.mustInclude.join(", ")}; avoid=${slide.mustAvoid.join(", ")}; evidence=${slide.expectedEvidence.join(", ")};${required}`;
+      return `${slide.slide}. slideType=${slide.slideType}; role=${slide.role}; titleIntent=${slide.titleIntent}; claim=${slide.claim}; include=${slide.mustInclude.join(", ")}; avoid=${slide.mustAvoid.join(", ")}; evidence=${slide.expectedEvidence.join(", ")};${required}`;
     })
     .join("; ");
   const currentDeckPlanSlides = deckPlan?.slides
     .filter((slide) => currentSlides.size === 0 || currentSlides.has(slide.slide))
     .map((slide) => {
       const required = slide.requiredItems.length > 0
-        ? `requiredItems=${slide.requiredItems.map((item) => `${item.key || item.kind}:${item.exact ? "exactly " : ""}${item.count}`).join(", ")}`
+        ? `requiredItems=${slide.requiredItems.map((item) => `${item.key || item.slot || item.kind}:${item.exact ? "exactly " : ""}${item.count}`).join(", ")}`
         : "requiredItems=none";
       return [
-        `current slide ${slide.slide}: role=${slide.role}; claim=${slide.claim}; ${required}`,
+        `current slide ${slide.slide}: slideType=${slide.slideType}; role=${slide.role}; claim=${slide.claim}; ${required}`,
         `mustInclude=${slide.mustInclude.join(", ") || "none"}`,
         `mustAvoid=${slide.mustAvoid.join(", ") || "none"}`,
         slide.relationToPrevious ? `previous=${slide.relationToPrevious}` : "",
@@ -150,7 +210,7 @@ const deterministicDeckContext = (input: LLMGenerateInput): string => {
     "Use the selected slide role and text density when filling blocks. Bigger text blocks need explanation, not 2-3 dry fragments.",
     "For each factual bullet prefer: fact + meaning/consequence. If exact numbers are uncertain, do not invent precise quantities.",
     "Factual caution: avoid overclaims such as первый, создал современный язык, основоположник, перевернул язык, определил навсегда. Prefer: считается одной из ключевых фигур, во многом закрепил, помог соединить, сыграл центральную роль, подготовил почву.",
-    "Exact counts are mandatory: s2_goals=3, s2_plan=3, s5_bullets=5, s8_examples=4, s9_q1/s9_q2/s9_q3=3 questions, s10_summary=3.",
+    "Exact counts are mandatory from DeckPlan for the actual dynamic keys in this batch.",
     "Keep keywords compact: 4-5 short terms only, tied to the narrative; no long glossary definitions.",
     "For chronology, use known ranges or avoid precise dating when unsure; do not compress complex work periods into misleading decades.",
     "Avoid generic headings: Определение и термины; Ключевые факты; Основные понятия; <topic>: определение.",
@@ -187,7 +247,10 @@ export const buildUserPrompt = (input: LLMGenerateInput): string => {
     return buildImagePromptsUserPrompt(input);
   }
 
-  const keysWithRules = input.fillKeys.map((key) => `${key}: ${keyRule(key)}`);
+  const keysWithRules = input.fillKeys.map((key) => {
+    const deckRule = deckPlanRuleForKey(input, key);
+    return `${key}: ${[keyRule(key), deckRule].filter(Boolean).join(" | ")}`;
+  });
 
   return [
     buildRagContext(input),

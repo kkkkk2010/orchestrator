@@ -2,13 +2,17 @@ export type SlideType =
   | "cover"
   | "goals"
   | "hook"
+  | "context"
   | "definition"
   | "bullets"
+  | "comparison"
   | "twoCol"
   | "steps"
+  | "timeline"
   | "examples"
   | "quiz"
-  | "summary";
+  | "summary"
+  | "visual_explanation";
 
 export type LayoutTextSlot = {
   slotId: string;
@@ -52,19 +56,35 @@ export type LayoutPack = {
 export type SlidePlanRow = {
   slide: number;
   slideType: SlideType;
+  role?: string;
+  claim?: string;
+  titleIntent?: string;
+  requiredSlotIds?: string[];
 };
 
 export type SelectedLayout = {
   slide: number;
   slideType: SlideType;
+  resolvedSlideType?: SlideType;
   layoutId: string;
   source: "layouts-local" | "layouts" | "builtin";
   hadFallback: boolean;
+  fallbackSlideType?: SlideType;
 };
 
 export type LayoutEngineDiagnostics = {
   enabled: boolean;
   mode: "catalog" | "builtins" | "legacy_fallback";
+  dynamicPlanUsed?: boolean;
+  deckPlanSlideCount?: number;
+  compiledSlideTypes?: Array<{ slide: number; slideType: SlideType; role?: string; layoutSlideType?: SlideType }>;
+  fallbackSlideTypeMappings?: Array<{ slide: number; requested: SlideType; resolved: SlideType; reason: string }>;
+  fallbackSlotInferences?: Array<{ slide: number; slideType: SlideType; slots: string[] }>;
+  unsupportedSlideTypes?: string[];
+  dynamicBindings?: Array<{ slide: number; slotName: string; fillKey: string }>;
+  missingSlotBindings?: string[];
+  duplicateFillKeys?: string[];
+  legacyEmergencyFallbackUsed?: boolean;
   selectedLayouts: SelectedLayout[];
   missingLayoutTypes: string[];
   slotBindingWarnings: string[];

@@ -4,4 +4,5 @@ export { validateLayoutPack, runLayoutValidateCli } from "./validate";
 export { runLayoutInspectCli } from "./inspect";
 export { runLayoutImportCli, scaffoldManifestFromDoc } from "./importLayout";
 export { selectLayoutForSlide } from "./selector";
-export { getSlotBindings } from "./binder";
+export { getDynamicFillKey, getDynamicSlotBindings, getSlotBindings } from "./binder";
+export { buildDynamicSlidePlan, getDefaultSlotsForSlideType } from "./dynamicPlan";
