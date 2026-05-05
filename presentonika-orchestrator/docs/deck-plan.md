@@ -84,6 +84,23 @@ Response:
         "editable": true
       }
     ],
+    "editableFields": {
+      "basic": [
+        "centralQuestion",
+        "thesis",
+        "presentationType",
+        "slides[].slideType",
+        "slides[].role",
+        "slides[].titleIntent",
+        "slides[].claim",
+        "slides[].mustInclude",
+        "slides[].mustAvoid"
+      ],
+      "advanced": [
+        "slides[].requiredItems",
+        "slides[].visualSuggestions"
+      ]
+    },
     "uiWarnings": []
   },
   "diagnostics": {

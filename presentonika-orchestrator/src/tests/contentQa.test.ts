@@ -76,6 +76,8 @@ export const runContentQaTests = (): void => {
   assert.ok(report.stats.overclaimRiskCount >= 1);
   assert.ok(report.stats.chronologyRiskCount >= 1);
   assert.ok(report.stats.deckPlanIssueCount >= 1);
+  assert.ok(report.stats.deckPlanRouteIssueCount >= 1);
+  assert.equal("narrativeIssueCount" in report.stats, false);
   assert.ok(report.score < 100);
   assert.equal(report.issues.find((issue) => issue.code === "required_count_mismatch")?.severity, "error");
 
@@ -173,6 +175,65 @@ export const runContentQaTests = (): void => {
   assert.ok(dynamicReport.issues.some((issue) => issue.code === "quiz_not_testing_narrative" && issue.slide === 8));
   assert.equal(dynamicReport.issues.some((issue) => issue.slide === 9 && `${issue.sample || ""}`.includes("check understanding")), false);
   assert.equal(dynamicReport.issues.some((issue) => `${issue.key || ""}` === "s8_examples" || `${issue.key || ""}` === "s9_summary"), false);
+
+  const termsDeckPlan = buildDeterministicDeckPlan({
+    topic: "Османская империя",
+    language: "ru",
+    slideCount: 10,
+    presentationType: "auto",
+  });
+  termsDeckPlan.slides = termsDeckPlan.slides.map((slide) => ({
+    ...slide,
+    requiredItems: slide.slide === 4
+      ? [{ slot: "keywords", kind: "terms" as const, count: 3, exact: true }]
+      : [],
+  }));
+  const commaTermsReport = runContentQa({
+    fills: {
+      s4_keywords: "Анатолийский бейлик, Гази, Сельджуки, Византия",
+    },
+    fillKeys: ["s4_keywords"],
+    topic: "Османская империя",
+    deckPlan: termsDeckPlan,
+  });
+  const commaTermsMismatch = commaTermsReport.issues.find((issue) => issue.code === "required_count_mismatch" && issue.key === "s4_keywords");
+  assert.equal(commaTermsMismatch?.actual, 4);
+  assert.equal(commaTermsMismatch?.expected, 3);
+  assert.equal(commaTermsMismatch?.severity, "warn");
+  assert.ok(commaTermsReport.score >= 80);
+
+  const bulletTermsReport = runContentQa({
+    fills: {
+      s4_keywords: "• Анатолийский бейлик\n• Гази\n• Сельджуки",
+    },
+    fillKeys: ["s4_keywords"],
+    topic: "Османская империя",
+    deckPlan: termsDeckPlan,
+  });
+  assert.equal(bulletTermsReport.issues.some((issue) => issue.code === "required_count_mismatch" && issue.key === "s4_keywords"), false);
+
+  const closingPlan = buildDeterministicDeckPlan({
+    topic: "Османская империя",
+    language: "ru",
+    slideCount: 10,
+    presentationType: "auto",
+  });
+  closingPlan.slides = closingPlan.slides.map((slide) => {
+    if (slide.slide === 9) return { ...slide, slideType: "summary" as const, role: "conclusion", requiredItems: [] };
+    if (slide.slide === 10) return { ...slide, slideType: "summary" as const, role: "homework_sources", titleIntent: "Домашнее задание и дополнительные источники", claim: "Закрепить вывод через задание и источники.", requiredItems: [] };
+    return { ...slide, requiredItems: [] };
+  });
+  const closingReport = runContentQa({
+    fills: {
+      s9_summary: "• Империя выросла благодаря военной организации.\n• Управление помогало удерживать территории.\n• Кризисы показали пределы системы.",
+      s10_homework: "Сравните причины подъёма и ослабления империи.",
+      s10_sources: "Источники: школьный учебник истории, исторические карты.",
+    },
+    fillKeys: ["s9_summary", "s10_homework", "s10_sources"],
+    topic: "Османская империя",
+    deckPlan: closingPlan,
+  });
+  assert.equal(closingReport.issues.some((issue) => issue.code === "repeated_slide_purpose"), false);
 
   const normalized = normalizeBulletLineFormatting("• A. • B. • C.");
   assert.equal(normalized.value, "• A.\n• B.\n• C.");

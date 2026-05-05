@@ -64,6 +64,23 @@ curl -X POST "https://ORCHESTRATOR_HOST/plans" \
         "editable": true
       }
     ],
+    "editableFields": {
+      "basic": [
+        "centralQuestion",
+        "thesis",
+        "presentationType",
+        "slides[].slideType",
+        "slides[].role",
+        "slides[].titleIntent",
+        "slides[].claim",
+        "slides[].mustInclude",
+        "slides[].mustAvoid"
+      ],
+      "advanced": [
+        "slides[].requiredItems",
+        "slides[].visualSuggestions"
+      ]
+    },
     "uiWarnings": []
   },
   "diagnostics": {
@@ -77,7 +94,7 @@ The canonical `deckPlan` is the object to send back to `/jobs`. `planForUi` is a
 
 ## 3. Fields To Show
 
-Show these fields in the editor:
+Show these basic fields in the first editor UI:
 
 - `centralQuestion`
 - `thesis`
@@ -89,10 +106,13 @@ Show these fields in the editor:
 - `slides[].claim`
 - `slides[].mustInclude`
 - `slides[].mustAvoid`
+
+Advanced fields:
+
 - `slides[].requiredItems`
 - `slides[].visualSuggestions`
 
-`requiredItems` should be shown as optional advanced controls. They only apply to countable content slots such as `goals`, `plan`, `bullets`, `examples`, `questions`, `steps`, and `summary`.
+`requiredItems` are technical enough that the first UI can hide them by default. They only apply to countable content slots such as `goals`, `plan`, `bullets`, `examples`, `questions`, `steps`, `keywords`, and `summary`.
 
 ## 4. Fields To Hide
 

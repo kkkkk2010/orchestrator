@@ -26,7 +26,8 @@ export type ContentQaReport = {
     shortLargeBlockCount: number;
     bulletIssueCount: number;
     requiredCountMismatchCount: number;
-    narrativeIssueCount: number;
+    routeIssueCount: number;
+    deckPlanRouteIssueCount: number;
     deckPlanIssueCount: number;
     overclaimRiskCount: number;
     chronologyRiskCount: number;
@@ -53,6 +54,12 @@ const linesOf = (value: string): string[] => value
   .map((line) => compact(line.replace(/^[-*•]\s*/, "")))
   .filter(Boolean);
 
+const termsOf = (value: string): string[] => value
+  .split(/\r?\n|[;,]/)
+  .flatMap((part) => part.split(/(?:^|\s)[-•]\s+/))
+  .map((part) => compact(part.replace(/^[-*•]\s*/, "")))
+  .filter(Boolean);
+
 const words = (value: string): string[] => compact(value).split(/\s+/).filter(Boolean);
 
 const normalize = (value: string): string => compact(value.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " "));
@@ -72,10 +79,14 @@ const overlapScore = (a: string, b: string): number => {
   return hits / Math.min(left.size, right.size);
 };
 
-const issueWeight = (severity: ContentQaSeverity): number => {
-  if (severity === "error") return 18;
-  if (severity === "warn") return 9;
-  return 3;
+const issueWeight = (issue: ContentQaIssue): number => {
+  if (issue.severity === "error") {
+    if (issue.code === "required_count_mismatch" || issue.code === "weak_exact_count_instruction") return 7;
+    if (issue.code === "missing_field" || issue.code === "placeholder_leak" || issue.code === "placeholder_token_left" || issue.code === "test_prefix_leaked") return 14;
+    return 8;
+  }
+  if (issue.severity === "warn") return 3;
+  return 1;
 };
 
 const pushIssue = (issues: ContentQaIssue[], issue: ContentQaIssue): void => {
@@ -440,7 +451,7 @@ const countLinesOrKeys = (params: {
   for (const key of candidateKeys) {
     const value = fills[key];
     if (typeof value === "string" && value.trim().length > 0) {
-      return { matched: true, count: linesOf(value).length, sample: value.slice(0, 160), key };
+      return { matched: true, count: item.kind === "terms" ? termsOf(value).length : linesOf(value).length, sample: value.slice(0, 160), key };
     }
   }
 
@@ -475,6 +486,18 @@ const isConclusionSlide = (slide: DeckPlanSlide): boolean => (
   || /conclusion|summary|итог|вывод|заключ/i.test(slide.role)
 );
 
+const isHomeworkSourcesSlide = (slide: DeckPlanSlide): boolean => (
+  /homework_sources|homework|sources|closing|домаш|источник|закреп|дополнитель/i.test(`${slide.role} ${slide.titleIntent} ${slide.claim}`)
+);
+
+const isAllowedRepeatedPurpose = (previous: DeckPlanSlide | undefined, current: DeckPlanSlide): boolean => {
+  if (!previous) return false;
+  return previous.slideType === "summary"
+    && current.slideType === "summary"
+    && isConclusionSlide(previous)
+    && isHomeworkSourcesSlide(current);
+};
+
 const assessDeckPlanAdherence = (params: {
   deckPlan: DeckPlan;
   fills: Record<string, string>;
@@ -506,6 +529,10 @@ const assessDeckPlanAdherence = (params: {
     const role = normalize(slide.role);
     const previous = roleOwners.get(role);
     if (previous && previous !== slide.slide) {
+      const previousSlide = deckPlan.slides.find((item) => item.slide === previous);
+      if (isAllowedRepeatedPurpose(previousSlide, slide)) {
+        continue;
+      }
       pushIssue(issues, {
         code: "repeated_slide_purpose",
         severity: "warn",
@@ -540,9 +567,10 @@ const assessDeckPlanAdherence = (params: {
         continue;
       }
       if (counted.count !== item.count) {
+        const severity: ContentQaSeverity = item.kind === "terms" && counted.count >= item.count && counted.count <= 5 ? "warn" : "error";
         pushIssue(issues, {
           code: "required_count_mismatch",
-          severity: "error",
+          severity,
           layer: "plan",
           key: counted.key,
           slide: slide.slide,
@@ -553,7 +581,7 @@ const assessDeckPlanAdherence = (params: {
         });
         pushIssue(issues, {
           code: "weak_exact_count_instruction",
-          severity: "error",
+          severity,
           layer: "plan",
           key: counted.key,
           slide: slide.slide,
@@ -738,6 +766,32 @@ const assessDeckPlanAdherence = (params: {
       sample: weakPairs.map(([left, right]) => `${left.slide}-${right.slide}`).join(", "),
     });
   }
+};
+
+const calculateContentQualityScore = (issues: ContentQaIssue[], keysChecked: number): number => {
+  const missingCount = issues.filter((issue) => issue.code === "missing_field").length;
+  const criticalFormatCount = issues.filter((issue) => (
+    issue.code === "placeholder_leak"
+    || issue.code === "placeholder_token_left"
+    || issue.code === "test_prefix_leaked"
+  )).length;
+  const requiredCountMismatchCount = issues.filter((issue) => issue.code === "required_count_mismatch" && issue.severity === "error").length;
+  const penalty = issues.reduce((sum, issue) => sum + issueWeight(issue), 0);
+  let score = Math.max(0, Math.min(100, 100 - penalty));
+
+  const manyMissing = missingCount >= Math.max(3, Math.ceil(keysChecked * 0.25));
+  const nearlyAllMissing = keysChecked > 0 && missingCount >= Math.ceil(keysChecked * 0.8);
+  if (nearlyAllMissing) return 0;
+  if (manyMissing || criticalFormatCount >= 3) score = Math.min(score, 19);
+  else if (criticalFormatCount > 0) score = Math.min(score, 49);
+  else if (requiredCountMismatchCount >= 4) score = Math.min(score, 49);
+  else if (requiredCountMismatchCount >= 2) score = Math.min(score, 69);
+
+  if (!manyMissing && criticalFormatCount === 0 && requiredCountMismatchCount < 4) {
+    score = Math.max(score, 20);
+  }
+
+  return score;
 };
 
 export const runContentQa = (params: {
@@ -1034,9 +1088,8 @@ export const runContentQa = (params: {
     assessDeckPlanAdherence({ deckPlan: params.deckPlan, fills: params.fills, issues });
   }
 
-  const penalty = issues.reduce((sum, issue) => sum + issueWeight(issue.severity), 0);
-  const score = Math.max(0, Math.min(100, 100 - penalty));
-  const narrativeCodes = new Set([
+  const score = calculateContentQualityScore(issues, params.fillKeys.length);
+  const routeCodes = new Set([
     "no_central_question",
     "missing_thesis",
     "slide_not_advancing_argument",
@@ -1067,7 +1120,8 @@ export const runContentQa = (params: {
       shortLargeBlockCount: issues.filter((issue) => issue.code === "large_block_too_short").length,
       bulletIssueCount: issues.filter((issue) => issue.code === "too_few_bullets" || issue.code === "bullet_too_short").length,
       requiredCountMismatchCount: issues.filter((issue) => issue.code === "required_count_mismatch").length,
-      narrativeIssueCount: issues.filter((issue) => narrativeCodes.has(issue.code)).length,
+      routeIssueCount: issues.filter((issue) => routeCodes.has(issue.code)).length,
+      deckPlanRouteIssueCount: issues.filter((issue) => routeCodes.has(issue.code)).length,
       deckPlanIssueCount: issues.filter((issue) => issue.layer === "plan").length,
       overclaimRiskCount: issues.filter((issue) => issue.code === "overclaim_risk" || issue.code === "conclusion_overclaim").length,
       chronologyRiskCount: issues.filter((issue) => issue.code === "chronology_risk").length,

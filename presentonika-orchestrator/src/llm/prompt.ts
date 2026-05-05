@@ -122,7 +122,9 @@ const deckPlanRuleForKey = (input: LLMGenerateInput, key: string): string => {
   const countRule = item
     ? `${item.exact ? "ровно" : "примерно"} ${item.count} ${item.kind}`
     : "";
-  const lineRule = item && ["bullets", "examples", "questions", "steps", "summary", "route_items"].includes(item.kind)
+  const lineRule = item && item.kind === "terms"
+    ? `Для ${key}: ${item.exact ? "ровно" : "примерно"} ${item.count} компактных термина; можно через запятую или отдельными строками, без длинных определений.`
+    : item && ["bullets", "examples", "questions", "steps", "summary", "route_items"].includes(item.kind)
     ? `Для ${key}: ${item.exact ? "ровно" : "примерно"} ${item.count} строк; каждая строка начинается с "• "; не ставь несколько • в одной строке.`
     : "";
   const contract = [

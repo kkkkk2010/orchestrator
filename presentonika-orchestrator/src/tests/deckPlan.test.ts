@@ -116,7 +116,13 @@ export const runDeckPlanTests = async (): Promise<void> => {
         return { ...slide, requiredItems: [{ kind: "question", count: 3, exact: true }] };
       }
       if (slide.slide === 10) {
-        return { ...slide, relationToNext: null, claim: null };
+        return {
+          ...slide,
+          role: "conclusion",
+          titleIntent: "Домашнее задание и дополнительные источники",
+          claim: "Закрепить вывод через задание и источники.",
+          relationToNext: null,
+        };
       }
       return slide;
     }),
@@ -145,6 +151,7 @@ export const runDeckPlanTests = async (): Promise<void> => {
   assert.equal(normalized.deckPlan.slides[8].requiredItems[0].kind, "questions");
   assert.equal(normalized.deckPlan.slides[8].requiredItems[0].slot, "questions");
   assert.equal(normalized.deckPlan.slides[9].relationToNext, undefined);
+  assert.equal(normalized.deckPlan.slides[9].role, "homework_sources");
   assert.equal(normalized.deckPlan.slides[9].claim.length > 0, true);
   assert.equal(normalized.deckPlan.slides[3].visualSuggestions.length, 5);
   assert.equal(normalized.normalization.applied, true);
@@ -155,6 +162,7 @@ export const runDeckPlanTests = async (): Promise<void> => {
   assert.ok(normalized.normalization.slotContractWarnings.some((warning) => warning.includes("cover requiredItem")));
   assert.ok(normalized.normalization.normalizedNullOptionals >= 7);
   assert.ok(normalized.normalization.normalizedSlideTypes >= 1);
+  assert.ok(normalized.normalization.normalizedSlideRoles >= 1);
   assert.ok(normalized.normalization.warnings.some((warning) => warning.includes("bullet -> bullets")));
   assert.ok(normalized.normalization.warnings.some((warning) => warning.includes("relationToPrevious")));
   assert.throws(() => normalizeLlmDeckPlanCandidate({ ...rawLlmPlan, centralQuestion: "", slides: [] }, planRequest));
@@ -165,7 +173,8 @@ export const runDeckPlanTests = async (): Promise<void> => {
   const uiPlan = buildPlanForUi(normalized.deckPlan, [{ code: "empty_must_include", severity: "warn", slide: 1, message: "example warning" }]);
   assert.equal(uiPlan.version, 1);
   assert.equal(uiPlan.topic, "Османская империя");
-  assert.ok(uiPlan.editableFields.includes("slides[].claim"));
+  assert.ok(uiPlan.editableFields.basic.includes("slides[].claim"));
+  assert.ok(uiPlan.editableFields.advanced.includes("slides[].requiredItems"));
   assert.ok(uiPlan.hiddenFields.includes("deckPlanRoute"));
   assert.equal(uiPlan.slides[0].editable, true);
   assert.equal(uiPlan.uiWarnings[0].code, "empty_must_include");

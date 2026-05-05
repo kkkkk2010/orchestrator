@@ -32,6 +32,7 @@ export type PlannerNormalizationDiagnostics = {
   slotContractWarnings: string[];
   normalizedNullOptionals: number;
   normalizedSlideTypes: number;
+  normalizedSlideRoles: number;
   warnings: string[];
 };
 
@@ -366,6 +367,24 @@ const normalizeRequiredItemsByContract = (params: {
   return out.slice(0, 8);
 };
 
+const normalizeSlideRoleForUi = (params: {
+  slideType: DeckPlanSlideType;
+  role: string;
+  titleIntent: string;
+  claim: string;
+  slideNo: number;
+  normalization: PlannerNormalizationDiagnostics;
+}): string => {
+  if (params.slideType !== "summary") return params.role;
+  const text = `${params.role} ${params.titleIntent} ${params.claim}`.toLowerCase();
+  if (/homework_sources|homework|sources|домаш|источник|дополнитель|закреп/.test(text) && !/homework_sources/.test(params.role)) {
+    params.normalization.normalizedSlideRoles += 1;
+    params.normalization.warnings.push(`slide ${params.slideNo}: normalized summary role -> homework_sources`);
+    return "homework_sources";
+  }
+  return params.role;
+};
+
 export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanRequest): { deckPlan: DeckPlan; normalization: PlannerNormalizationDiagnostics } => {
   const candidate = raw && typeof raw === "object" && "deckPlan" in raw
     ? (raw as { deckPlan?: unknown }).deckPlan
@@ -382,6 +401,7 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
     slotContractWarnings: [],
     normalizedNullOptionals: 0,
     normalizedSlideTypes: 0,
+    normalizedSlideRoles: 0,
     warnings: [],
   };
 
@@ -543,12 +563,23 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
       items: nextRequiredItems,
       normalization,
     });
+    const titleIntent = normalizeRequiredString(slide.titleIntent, `slides.${slideIndex}.titleIntent`, titleIntentFallback, 180);
+    const claim = normalizeRequiredString(slide.claim, `slides.${slideIndex}.claim`, claimFallback, 420);
+    const role = normalizeSlideRoleForUi({
+      slideType: normalizedSlideType,
+      role: normalizeRequiredString(slide.role, `slides.${slideIndex}.role`, "evidence_mechanism", 80),
+      titleIntent,
+      claim,
+      slideNo,
+      normalization,
+    });
 
     const normalizedSlide = {
       ...slide,
       slideType: normalizedSlideType,
-      titleIntent: normalizeRequiredString(slide.titleIntent, `slides.${slideIndex}.titleIntent`, titleIntentFallback, 180),
-      claim: normalizeRequiredString(slide.claim, `slides.${slideIndex}.claim`, claimFallback, 420),
+      role,
+      titleIntent,
+      claim,
       mustInclude: normalizeStringArray(slide.mustInclude, `slides.${slideIndex}.mustInclude`),
       mustAvoid: normalizeStringArray(slide.mustAvoid, `slides.${slideIndex}.mustAvoid`),
       expectedEvidence: normalizeStringArray(slide.expectedEvidence, `slides.${slideIndex}.expectedEvidence`),
@@ -568,6 +599,7 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
     || normalization.remappedRequiredItems > 0
     || normalization.normalizedNullOptionals > 0
     || normalization.normalizedSlideTypes > 0
+    || normalization.normalizedSlideRoles > 0
     || normalization.warnings.length > 0;
   normalization.slotContractWarnings = normalization.slotContractWarnings.slice(0, 20);
   normalization.warnings = normalization.warnings.slice(0, 20);

@@ -34,7 +34,10 @@ export type DeckPlanForUi = {
   thesis: string;
   audience?: string;
   slides: DeckPlanForUiSlide[];
-  editableFields: string[];
+  editableFields: {
+    basic: string[];
+    advanced: string[];
+  };
   hiddenFields: string[];
   uiWarnings: DeckPlanUiWarning[];
 };
@@ -63,19 +66,23 @@ export const buildPlanForUi = (deckPlan: DeckPlan, warnings: PlanDiagnosticWarni
     visualSuggestions: slide.visualSuggestions,
     editable: true,
   })),
-  editableFields: [
-    "centralQuestion",
-    "thesis",
-    "presentationType",
-    "slides[].slideType",
-    "slides[].role",
-    "slides[].titleIntent",
-    "slides[].claim",
-    "slides[].mustInclude",
-    "slides[].mustAvoid",
-    "slides[].requiredItems",
-    "slides[].visualSuggestions",
-  ],
+  editableFields: {
+    basic: [
+      "centralQuestion",
+      "thesis",
+      "presentationType",
+      "slides[].slideType",
+      "slides[].role",
+      "slides[].titleIntent",
+      "slides[].claim",
+      "slides[].mustInclude",
+      "slides[].mustAvoid",
+    ],
+    advanced: [
+      "slides[].requiredItems",
+      "slides[].visualSuggestions",
+    ],
+  },
   hiddenFields: [
     "selectedLayoutId",
     "resolvedLayoutSlideType",
