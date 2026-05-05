@@ -30,11 +30,10 @@ import { buildSystemPrompt, buildUserPrompt } from "./llm/prompt";
 import { mergeFills } from "./llm/mergeFills";
 import { aggregateFillCounts, buildBatches } from "./llm/batching";
 import { calcLlmRetryDelayMs, isRetryableLlmError } from "./llm/retry";
-import { applyTypographyStandards, autoFitText, dedupeBulletLines, generateLocalFallback, generateLocalFallbackBullets, normalizeText, resolveThemeTypography, styleRoleByKey } from "./templates/textPostprocess";
+import { applyTypographyStandards, autoFitText, dedupeBulletLines, generateLocalFallback, generateLocalFallbackBullets, isBulletLikeFillKey, normalizeBulletLineFormatting, normalizeText, resolveThemeTypography, styleRoleByKey } from "./templates/textPostprocess";
 import { compileLayoutPresentation } from "./layouts";
 import type { LayoutEngineDiagnostics } from "./layouts/types";
 import { runContentQa } from "./content/contentQa";
-import { buildNarrativePlan, sourceFallbackForTopic } from "./content/narrativePlan";
 import { buildDeterministicDeckPlan } from "./deckPlan";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
@@ -234,6 +233,20 @@ const extractSlideFromKey = (key: string): number => {
   if (!match?.[1]) return 1;
   const num = Number.parseInt(match[1], 10);
   return Number.isFinite(num) && num > 0 ? num : 1;
+};
+
+const sourceFallbackForDeckPlan = (topic: string, deckPlan: { subject?: string; presentationType?: string }): string => {
+  const context = `${topic} ${deckPlan.subject || ""} ${deckPlan.presentationType || ""}`.toLowerCase();
+  if (/literature|литератур|пушкин|поэт|писател|роман|поэма/.test(context)) {
+    return "Источники: школьный учебник литературы, тексты произведений, литературоведческие справочники.";
+  }
+  if (/history|истор|импер|войн|революц|государств/.test(context)) {
+    return "Источники: школьный учебник истории, исторические карты, энциклопедические справочники.";
+  }
+  if (/science|physics|chemistry|biology|наук|физик|хими|биолог/.test(context)) {
+    return "Источники: школьный учебник, научно-популярные справочники, материалы курса.";
+  }
+  return "Источники: школьный учебник, энциклопедические справочники, материалы курса.";
 };
 
 const worker = new Worker(
@@ -509,9 +522,27 @@ const worker = new Worker(
     const normalizedAfterVariants = normalizePlaceholders(doc);
     const placeholderScan = extractPlaceholderLocations(doc);
     const fillKeys = [...new Set(placeholderScan.locations.map((item) => item.key))];
-    const narrativePlan = buildNarrativePlan({
-      topic,
-      selectedLayouts: layoutEngineDiagnostics.selectedLayouts,
+    const selectedLayoutBySlide = new Map(layoutEngineDiagnostics.selectedLayouts.map((row) => [row.slide, row]));
+    const deckPlanRoute = deckPlan.slides.map((slide: {
+      slide: number;
+      slideType: string;
+      role: string;
+      claim: string;
+      titleIntent: string;
+      requiredItems: unknown[];
+    }) => {
+      const selectedLayout = selectedLayoutBySlide.get(slide.slide);
+      return {
+        slide: slide.slide,
+        slideType: slide.slideType,
+        role: slide.role,
+        claim: slide.claim,
+        titleIntent: slide.titleIntent,
+        selectedLayoutId: selectedLayout?.layoutId || null,
+        resolvedLayoutSlideType: selectedLayout?.slideType || null,
+        fillKeys: fillKeys.filter((key) => key.startsWith(`s${slide.slide}_`)),
+        requiredItems: slide.requiredItems,
+      };
     });
     const placeholdersBySlide = placeholderScan.locations.reduce<Record<string, { count: number; keys: string[] }>>((acc, location) => {
       const slideKey = String(location.slide);
@@ -637,7 +668,6 @@ const worker = new Worker(
             imagePlan: batchImagePlanInput,
             strictKeysRequired: true,
             deckPlan,
-            narrativePlan,
             layoutContext: layoutEngineDiagnostics.selectedLayouts
               .filter((row) => !batch.slide || row.slide === batch.slide)
               .map((row) => ({
@@ -766,6 +796,29 @@ const worker = new Worker(
 
     const generatedFills = mergeFills(fillKeys, llmFills, "TEST_");
     const fills = { ...generatedFills, ...debugFills };
+    const formatNormalizations = {
+      count: 0,
+      examples: [] as Array<{ key: string; before: string; after: string; rules: string[] }>,
+    };
+    const applySafeFormatNormalizations = (keys: string[]): void => {
+      for (const key of keys) {
+        const value = fills[key];
+        if (typeof value !== "string") continue;
+        if (!isBulletLikeFillKey(key) && !/•\s*•|[^\n]\s+•/.test(value)) continue;
+        const normalized = normalizeBulletLineFormatting(value);
+        if (!normalized.changed) continue;
+        fills[key] = normalized.value;
+        formatNormalizations.count += 1;
+        if (formatNormalizations.examples.length < 8) {
+          formatNormalizations.examples.push({
+            key,
+            before: value.slice(0, 180),
+            after: normalized.value.slice(0, 180),
+            rules: normalized.rules,
+          });
+        }
+      }
+    };
 
     for (const key of Object.keys(fills)) {
       fills[key] = normalizeText(key, fills[key]);
@@ -792,13 +845,14 @@ const worker = new Worker(
 
       if (key.endsWith("_sources") || key.includes("sources")) {
         if (!ragEnabledForJob || ragHitCount === 0) {
-          fills[key] = sourceFallbackForTopic(topic, narrativePlan.topicKind);
+          fills[key] = sourceFallbackForDeckPlan(topic, deckPlan);
         } else {
           const sourceUris = (ragSources || ragCitations || []).map((item) => item.source_uri).filter((uri): uri is string => typeof uri === "string").slice(0, 5);
           fills[key] = sourceUris.length > 0 ? `Источники: ${sourceUris.join("; ")}` : fills[key];
         }
       }
     }
+    applySafeFormatNormalizations(Object.keys(fills));
 
     const fallbackKeysCount = fillKeys.filter((key) => {
       if (Object.prototype.hasOwnProperty.call(debugFills, key)) return false;
@@ -844,7 +898,6 @@ const worker = new Worker(
             mode: "targeted_fills",
             strictKeysRequired: true,
             deckPlan,
-            narrativePlan,
             layoutContext: layoutEngineDiagnostics.selectedLayouts
               .filter((row) => keys.some((key) => key.startsWith(`s${row.slide}_`)))
               .map((row) => ({
@@ -859,6 +912,7 @@ const worker = new Worker(
             fills[key] = normalizeText(key, value);
             targetedReceived += 1;
           }
+          applySafeFormatNormalizations(keys);
         }
 
         const targetLocations = placeholderScan.locations.filter((location) => remainingKeys.includes(location.key));
@@ -879,6 +933,7 @@ const worker = new Worker(
         fills[key] = normalizeText(key, generateLocalFallback({ key, topic, slideNumber }));
         qualityGate.localFallbackAppliedKeysCount += 1;
       }
+      applySafeFormatNormalizations(remainingKeys);
       const targetLocations = placeholderScan.locations.filter((location) => remainingKeys.includes(location.key));
       applyFillsByLocations(doc, targetLocations, fills);
       remainingFillTokenStats = scanRemainingFillTokens(doc);
@@ -903,7 +958,6 @@ const worker = new Worker(
       fillKeys,
       topic,
       deckPlan,
-      narrativePlan,
     });
     jobLogger.info(
       {
@@ -1084,8 +1138,11 @@ const worker = new Worker(
             : "No final slots resolved. Check imageAt bindings or auto-detect settings.",
         },
         layoutEngine: layoutEngineDiagnostics,
-        deckPlan: deckPlanDiagnostics,
-        narrativePlan,
+        deckPlan: {
+          ...deckPlanDiagnostics,
+          route: deckPlanRoute,
+        },
+        deckPlanRoute,
         llm: llmDiagnostics,
         fills: {
           fillKeysCount: fillKeys.length,
@@ -1104,6 +1161,7 @@ const worker = new Worker(
           finalRemainingMustacheTokensCount: qualityGate.finalRemainingMustacheTokensCount,
           hint: qualityGate.hint,
         },
+        formatNormalizations,
         typography: {
           colorsApplied: typographyStats.colorsApplied,
           themeColorMode: typographyStats.themeColorMode,
@@ -1513,8 +1571,10 @@ const worker = new Worker(
         ...deckPlanDiagnostics,
         centralQuestion: deckPlan.centralQuestion,
         thesis: deckPlan.thesis,
+        route: deckPlanRoute,
       },
-      narrativePlan,
+      deckPlanRoute,
+      formatNormalizations,
       contentQuality,
       rag: {
         enabled: ragEnabledForJob,

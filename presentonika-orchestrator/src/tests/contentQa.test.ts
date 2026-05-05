@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
 import { runContentQa } from "../content/contentQa";
-import { buildNarrativePlan } from "../content/narrativePlan";
 import { buildDeterministicDeckPlan } from "../deckPlan";
+import { normalizeBulletLineFormatting } from "../templates/textPostprocess";
+
+const buildPushkinPlan = () => buildDeterministicDeckPlan({
+  topic: "Александр Пушкин",
+  subject: "literature",
+  grade: "7",
+  language: "ru",
+  slideCount: 10,
+  presentationType: "auto",
+});
 
 export const runContentQaTests = (): void => {
-  const plan = buildNarrativePlan({ topic: "Александр Пушкин" });
+  const deckPlan = buildPushkinPlan();
   const fills = {
     s1_title: "Александр Пушкин",
     s1_meta: "Пушкин важен для литературного языка.",
@@ -39,7 +48,7 @@ export const runContentQaTests = (): void => {
     fills,
     fillKeys: Object.keys(fills),
     topic: "Александр Пушкин",
-    narrativePlan: plan,
+    deckPlan,
   });
 
   assert.equal(JSON.stringify(fills), before);
@@ -62,29 +71,25 @@ export const runContentQaTests = (): void => {
   assert.ok(codes.has("generic_sources"));
   assert.ok(codes.has("repeated_central_claim"));
   assert.ok(codes.has("duplicated_goal_plan"));
-  assert.ok(codes.has("conclusion_not_answering_question"));
-  assert.ok(codes.has("goals_not_matching_narrative_plan"));
-  assert.ok(codes.has("hook_not_connected_to_following_slides"));
-  assert.ok(codes.has("examples_not_used_as_evidence"));
   assert.ok(codes.has("quiz_not_testing_narrative"));
   assert.ok(report.stats.requiredCountMismatchCount >= 1);
   assert.ok(report.stats.overclaimRiskCount >= 1);
   assert.ok(report.stats.chronologyRiskCount >= 1);
-  assert.ok(report.stats.narrativeIssueCount >= 1);
+  assert.ok(report.stats.deckPlanIssueCount >= 1);
   assert.ok(report.score < 100);
   assert.equal(report.issues.find((issue) => issue.code === "required_count_mismatch")?.severity, "error");
 
   const malformedPlan = {
-    ...plan,
+    ...deckPlan,
     centralQuestion: "",
     thesis: "",
-    slides: plan.slides.map((slide, index) => index === 1 ? { ...slide, purpose: plan.slides[0].purpose } : slide),
+    slides: deckPlan.slides.map((slide, index) => index === 1 ? { ...slide, role: deckPlan.slides[0].role } : slide),
   };
   const malformedReport = runContentQa({
     fills,
     fillKeys: Object.keys(fills),
     topic: "Александр Пушкин",
-    narrativePlan: malformedPlan,
+    deckPlan: malformedPlan,
   });
   const malformedCodes = new Set(malformedReport.issues.map((issue) => issue.code));
   assert.ok(malformedCodes.has("no_central_question"));
@@ -107,7 +112,7 @@ export const runContentQaTests = (): void => {
     },
     fillKeys: ["s3_title", "s4_title", "s5_bullets", "s6_left_bullets", "s6_right_bullets", "s7_step1", "s8_examples", "s9_q1", "s9_q2", "s9_q3", "s10_summary"],
     topic: "Александр Пушкин",
-    narrativePlan: plan,
+    deckPlan,
   });
   assert.ok(new Set(disconnected.issues.map((issue) => issue.code)).has("disconnected_slide_sequence"));
 
@@ -118,7 +123,7 @@ export const runContentQaTests = (): void => {
     },
     fillKeys: ["s4_title", "s4_definition"],
     topic: "Александр Пушкин",
-    narrativePlan: plan,
+    deckPlan,
   });
   assert.equal(goodTitleReport.issues.some((issue) => issue.code === "generic_title" && issue.key === "s4_title"), false);
 
@@ -128,7 +133,7 @@ export const runContentQaTests = (): void => {
     },
     fillKeys: ["s5_bullets"],
     topic: "Александр Пушкин",
-    narrativePlan: plan,
+    deckPlan,
   });
   assert.equal(cautiousReport.issues.some((issue) => issue.code === "overclaim_risk"), false);
 
@@ -138,17 +143,43 @@ export const runContentQaTests = (): void => {
     slideCount: 10,
     presentationType: "auto",
   });
-  dynamicDeckPlan.slides = dynamicDeckPlan.slides.map((slide) => slide.slide === 7
-    ? { ...slide, slideType: "examples", role: "examples_as_evidence", requiredItems: [{ slot: "examples", kind: "examples", count: 4, exact: true }] }
-    : slide);
+  dynamicDeckPlan.slides = dynamicDeckPlan.slides.map((slide) => {
+    if (slide.slide === 7) return { ...slide, slideType: "examples" as const, role: "examples_as_evidence", requiredItems: [{ key: "Примеры", slot: "examples", kind: "examples" as const, count: 4, exact: true }] };
+    if (slide.slide === 8) return { ...slide, slideType: "quiz" as const, role: "check_understanding", requiredItems: [{ slot: "questions", kind: "questions" as const, count: 3, exact: true }] };
+    if (slide.slide === 9) return { ...slide, slideType: "timeline" as const, role: "development_over_time", requiredItems: [{ slot: "steps", kind: "steps" as const, count: 4, exact: true }] };
+    if (slide.slide === 1) return { ...slide, requiredItems: [{ slot: "title", kind: "bullets" as const, count: 1, exact: true }] };
+    return slide;
+  });
   const dynamicReport = runContentQa({
     fills: {
+      s1_title: "Османская империя",
       s7_examples: "• Янычары показывают военную организацию.\n• Стамбул раскрывает роль столицы.\n• Торговые пути объясняют ресурсы.",
+      s8_q1: "В каком году была основана империя?",
+      s8_q2: "Где находилась столица?",
+      s8_q3: "Кто был правителем?",
+      s9_step1: "• Возникновение бейлика и первые завоевания.",
+      s9_step2: "• Взятие Константинополя меняет баланс сил.",
+      s9_step3: "• Реформы помогают удерживать разные территории.",
     },
-    fillKeys: ["s7_examples"],
+    fillKeys: ["s1_title", "s7_examples", "s8_q1", "s8_q2", "s8_q3", "s9_step1", "s9_step2", "s9_step3"],
     topic: "Османская империя",
     deckPlan: dynamicDeckPlan,
   });
   const dynamicIssues = dynamicReport.issues.filter((issue) => issue.code === "required_count_mismatch");
-  assert.ok(dynamicIssues.some((issue) => issue.key === "s7_examples" && issue.slide === 7));
+  assert.ok(dynamicIssues.some((issue) => issue.key === "s7_examples" && issue.slide === 7 && issue.expected === 4 && issue.actual === 3));
+  assert.ok(dynamicIssues.some((issue) => issue.key === "s9_step1" && issue.slide === 9 && issue.expected === 4 && issue.actual === 3));
+  assert.equal(dynamicIssues.some((issue) => issue.key === "s1_title"), false);
+  assert.ok(dynamicReport.issues.some((issue) => issue.code === "memory_only_quiz" && issue.slide === 8));
+  assert.ok(dynamicReport.issues.some((issue) => issue.code === "quiz_not_testing_narrative" && issue.slide === 8));
+  assert.equal(dynamicReport.issues.some((issue) => issue.slide === 9 && `${issue.sample || ""}`.includes("check understanding")), false);
+  assert.equal(dynamicReport.issues.some((issue) => `${issue.key || ""}` === "s8_examples" || `${issue.key || ""}` === "s9_summary"), false);
+
+  const normalized = normalizeBulletLineFormatting("• A. • B. • C.");
+  assert.equal(normalized.value, "• A.\n• B.\n• C.");
+  assert.equal(normalized.changed, true);
+  const double = normalizeBulletLineFormatting("• • A");
+  assert.equal(double.value, "• A");
+  assert.equal(double.changed, true);
+  const tooFew = normalizeBulletLineFormatting("• A. • B.");
+  assert.equal(tooFew.value.split("\n").length, 2);
 };

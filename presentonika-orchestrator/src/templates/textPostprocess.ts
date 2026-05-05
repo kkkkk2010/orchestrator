@@ -79,6 +79,54 @@ export const styleRoleByKey = (key: string): StyleRole => {
   return "body";
 };
 
+export type FormatNormalizationResult = {
+  value: string;
+  changed: boolean;
+  rules: string[];
+};
+
+export const isBulletLikeFillKey = (key: string): boolean => {
+  const normalized = key.toLowerCase();
+  return /(?:_bullets|_plan|_goals|_examples|_questions|_summary|_task|_steps|_step\d+|_q\d+)$/i.test(normalized);
+};
+
+export const normalizeBulletLineFormatting = (value: string): FormatNormalizationResult => {
+  const original = value;
+  const rules: string[] = [];
+  let next = value.replace(/\r\n/g, "\n");
+
+  if (/•\s*•/.test(next)) {
+    next = next.replace(/•\s*•\s*/g, "• ");
+    rules.push("double_bullet_marker");
+  }
+
+  if (next.split("\n").some((line) => (line.match(/•/g) || []).length > 1)) {
+    next = next.replace(/([^\n])\s+•\s*/g, "$1\n• ");
+    rules.push("multiple_bullets_on_one_line");
+  }
+
+  const normalizedLines = next
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return "";
+      if (/^•/.test(trimmed)) return `• ${trimmed.replace(/^•\s*/, "").trim()}`;
+      if (/^[-*]\s+/.test(trimmed)) return `• ${trimmed.replace(/^[-*]\s+/, "").trim()}`;
+      return trimmed;
+    });
+
+  next = normalizedLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (next !== original && !rules.includes("bullet_spacing")) {
+    rules.push("bullet_spacing");
+  }
+
+  return {
+    value: next,
+    changed: next !== original,
+    rules,
+  };
+};
+
 const defaultTypography = (themeId: string): TypographyConfig => {
   const normalized = themeId.toLowerCase();
   const dark = normalized.includes("dark");

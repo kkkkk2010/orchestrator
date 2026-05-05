@@ -122,9 +122,13 @@ const deckPlanRuleForKey = (input: LLMGenerateInput, key: string): string => {
   const countRule = item
     ? `${item.exact ? "ровно" : "примерно"} ${item.count} ${item.kind}`
     : "";
+  const lineRule = item && ["bullets", "examples", "questions", "steps", "summary", "route_items"].includes(item.kind)
+    ? `Для ${key}: ${item.exact ? "ровно" : "примерно"} ${item.count} строк; каждая строка начинается с "• "; не ставь несколько • в одной строке.`
+    : "";
   const contract = [
     `DeckPlan slide ${slideNo}: slideType=${slide.slideType}; role=${slide.role}; claim=${slide.claim}`,
     countRule ? `Для ${key}: ${countRule}.` : "",
+    lineRule,
     slide.mustInclude.length > 0 ? `Включи: ${slide.mustInclude.join(", ")}.` : "",
     slide.mustAvoid.length > 0 ? `Избегай: ${slide.mustAvoid.join(", ")}.` : "",
   ].filter(Boolean).join(" ");
@@ -157,7 +161,7 @@ const deterministicDeckContext = (input: LLMGenerateInput): string => {
     .join("; ");
 
   const deckPlan = input.deckPlan;
-  const narrative = input.narrativePlan;
+  const narrative = input.deckPlan ? undefined : input.narrativePlan;
   const currentSlides = new Set((input.layoutContext || [])
     .map((row) => row.slide)
     .concat(input.fillKeys.map((key) => Number.parseInt(key.match(/^s(\d+)_/i)?.[1] || "", 10)).filter(Number.isFinite)));
@@ -197,7 +201,9 @@ const deterministicDeckContext = (input: LLMGenerateInput): string => {
     .join("\n");
 
   return [
-    "Deck architecture: 10-slide teacher deck = cover, goals/plan, hook, context, facts, comparison, timeline/steps, examples, quiz, summary.",
+    deckPlan
+      ? "Deck architecture is dynamic: DeckPlan slide order and slideType are the only scenario source. Do not assume fixed slide numbers for examples, quiz, timeline, or summary."
+      : "Use the provided narrative/layout context to keep the deck coherent.",
     deckPlan ? `DeckPlan source=${deckPlan.source}; presentationType=${deckPlan.presentationType}` : "",
     deckPlan ? `centralQuestion: ${deckPlan.centralQuestion}` : (narrative ? `centralQuestion: ${narrative.centralQuestion}` : ""),
     deckPlan ? `thesis: ${deckPlan.thesis}` : (narrative ? `thesis: ${narrative.thesis}` : ""),
@@ -211,12 +217,15 @@ const deterministicDeckContext = (input: LLMGenerateInput): string => {
     "For each factual bullet prefer: fact + meaning/consequence. If exact numbers are uncertain, do not invent precise quantities.",
     "Factual caution: avoid overclaims such as первый, создал современный язык, основоположник, перевернул язык, определил навсегда. Prefer: считается одной из ключевых фигур, во многом закрепил, помог соединить, сыграл центральную роль, подготовил почву.",
     "Exact counts are mandatory from DeckPlan for the actual dynamic keys in this batch.",
+    "For bullet-like keys (goals, plan, bullets, examples, questions, steps, summary): every item must be on its own line, every item must start with \"• \", never put multiple bullet markers on one line.",
     "Keep keywords compact: 4-5 short terms only, tied to the narrative; no long glossary definitions.",
     "For chronology, use known ranges or avoid precise dating when unsure; do not compress complex work periods into misleading decades.",
     "Avoid generic headings: Определение и термины; Ключевые факты; Основные понятия; <topic>: определение.",
     "Treat the deck as one coherent lesson, not independent slides.",
     "Each slide must advance the central argument; do not restate the same central claim on every slide.",
-    "Slide 2 defines the route; later slides must follow it. Slide 3 opens the problem; slides 4-8 develop it. Slide 10 answers the centralQuestion.",
+    deckPlan
+      ? "Route/goals slides define the route; hook slides open the problem; examples, quiz, timeline, and summary must appear only where DeckPlan puts them. Summary/conclusion slides must answer the centralQuestion."
+      : "Slide 2 defines the route; later slides must follow it. Slide 3 opens the problem; slides 4-8 develop it. Slide 10 answers the centralQuestion.",
     "Examples must support the thesis, not just list works/facts. Quiz questions must test the argument and sequence, not isolated trivia.",
     narrative ? `antiRepetitionRules: ${narrative.antiRepetitionRules.join(" | ")}` : "",
   ].filter(Boolean).join("\n");
@@ -257,7 +266,7 @@ export const buildUserPrompt = (input: LLMGenerateInput): string => {
     `topic: ${input.topic || "презентация"}`,
     `language: ${input.language || "ru"}`,
     deterministicDeckContext(input),
-    slideContext(input.fillKeys),
+    input.deckPlan ? "" : slideContext(input.fillKeys),
     "Пиши содержательно и фактологично. Запрещены generic-фразы вроде: ключевой термин и его значение; короткий вывод; главная мысль по теме.",
     "Не смешивай несколько пунктов в одной строке. Не используй нумерацию внутри строк.",
     `keys: ${keysWithRules.join("; ")}`,
