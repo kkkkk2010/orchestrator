@@ -1,6 +1,18 @@
 export { buildDeterministicDeckPlan } from "./buildDeckPlan";
-export { generateDeckPlan, normalizeLlmDeckPlanCandidate } from "./planner";
-export type { PlanGenerationDiagnostics, PlanGenerationResult, PlannerNormalizationDiagnostics } from "./planner";
+export { buildPlannerPrompt, evaluateDeckPlanSequence, generateDeckPlan, normalizeLlmDeckPlanCandidate } from "./planner";
+export { buildPlanForUi } from "./planForUi";
+export type { DeckPlanForUi, DeckPlanForUiSlide, DeckPlanUiWarning } from "./planForUi";
+export type { PlanDiagnosticWarning, PlanGenerationDiagnostics, PlanGenerationResult, PlannerNormalizationDiagnostics } from "./planner";
+export {
+  getSlideTypeContract,
+  isAllowedSlotForSlideType,
+  isCountableSlotForSlideType,
+  nonCountedDeckPlanSlots,
+  normalizeDeckPlanSlot,
+  slideTypeSlotContracts,
+  slotContractsPromptText,
+} from "./slideTypeContracts";
+export type { SlideTypeSlotContract } from "./slideTypeContracts";
 export {
   createPlanRequestSchema,
   deckPlanPresentationTypeSchema,

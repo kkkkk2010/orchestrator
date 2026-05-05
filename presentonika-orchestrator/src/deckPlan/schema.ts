@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const deckPlanPresentationTypeSchema = z.enum([
   "auto",
+  "historical_overview",
   "overview",
   "lesson",
   "causes_consequences",

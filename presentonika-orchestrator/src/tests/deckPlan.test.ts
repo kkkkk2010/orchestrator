@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { buildDeterministicDeckPlan, deckPlanSchema, generateDeckPlan, normalizeLlmDeckPlanCandidate } from "../deckPlan";
+import { buildDeterministicDeckPlan, buildPlannerPrompt, buildPlanForUi, deckPlanSchema, generateDeckPlan, normalizeLlmDeckPlanCandidate, slideTypeSlotContracts } from "../deckPlan";
 import { createJobSchema } from "../schema";
 import { buildUserPrompt } from "../llm/prompt";
 import { runContentQa } from "../content/contentQa";
@@ -32,6 +32,19 @@ export const runDeckPlanTests = async (): Promise<void> => {
   assert.equal(deckPlan.slides.length, 10);
   assert.equal(deckPlan.slides[7].slideType, "examples");
   assert.equal(deckPlan.slides[7].requiredItems[0].count, 4);
+  assert.equal(slideTypeSlotContracts.cover.contentCountSlots.length, 0);
+  assert.ok(slideTypeSlotContracts.quiz.allowedSlots.includes("q1"));
+  const plannerPrompt = buildPlannerPrompt({
+    topic: "Османская империя",
+    subject: "history",
+    grade: "7",
+    language: "ru",
+    slideCount: 10,
+    presentationType: "auto",
+  });
+  assert.ok(plannerPrompt.includes("Use these slideType slot contracts exactly"));
+  assert.ok(plannerPrompt.includes("cover: allowedSlots=title,subtitle,meta; contentCountSlots=none"));
+  assert.ok(plannerPrompt.includes("Do NOT create requiredItems for title/subtitle/meta"));
   assert.ok(deckPlan.slides[0].titleIntent.includes("главный вопрос"));
   assert.ok(deckPlan.slides[1].mustAvoid.some((value) => value.includes("слабые глаголы")));
   assert.ok(deckPlan.slides[0].relationToNext?.includes("следующему шагу"));
@@ -58,6 +71,7 @@ export const runDeckPlanTests = async (): Promise<void> => {
     audience: null,
     presentationType: "causes_consequences",
     source: "llm",
+    createdAt: "2000-01-01T00:00:00.000Z",
     slides: deckPlan.slides.map((slide) => {
       if (slide.slide === 1) {
         return {
@@ -65,6 +79,13 @@ export const runDeckPlanTests = async (): Promise<void> => {
           relationToPrevious: null,
           titleIntent: null,
           mustInclude: [null, "главный вопрос"],
+          requiredItems: [{ slot: "title", kind: "bullets", count: 1, exact: true }],
+        };
+      }
+      if (slide.slide === 3) {
+        return {
+          ...slide,
+          requiredItems: [{ slot: "title", kind: "question", count: 1, exact: true, description: "проблемный вопрос" }],
         };
       }
       if (slide.slide === 4) {
@@ -72,6 +93,7 @@ export const runDeckPlanTests = async (): Promise<void> => {
           ...slide,
           relationToPrevious: "",
           requiredItems: [
+            { slot: "bullets", kind: "terms", count: 3, exact: true, description: "термины эпохи" },
             { kind: "map", count: 1, exact: false, description: "карта расширения империи" },
             { kind: "diagram", count: 1, exact: false, description: "схема управления" },
             { kind: "image", count: 1, exact: false, description: "изображение Стамбула" },
@@ -82,6 +104,9 @@ export const runDeckPlanTests = async (): Promise<void> => {
       }
       if (slide.slide === 5) {
         return { ...slide, requiredItems: [{ key: null, kind: "bullet", count: 5, exact: true, description: null }] };
+      }
+      if (slide.slide === 6) {
+        return { ...slide, requiredItems: [{ slot: "title", kind: "bullets", count: 2, exact: true, description: "две стороны сравнения" }] };
       }
       if (slide.slide === 7) {
         const { slideType: _slideType, ...withoutSlideType } = slide;
@@ -99,27 +124,51 @@ export const runDeckPlanTests = async (): Promise<void> => {
   const normalized = normalizeLlmDeckPlanCandidate(rawLlmPlan, planRequest);
   assert.equal(normalized.deckPlan.source, "llm");
   assert.equal(normalized.deckPlan.audience, undefined);
+  assert.notEqual(normalized.deckPlan.createdAt, "2000-01-01T00:00:00.000Z");
+  assert.equal(normalized.deckPlan.presentationType, "causes_consequences");
   assert.equal(normalized.deckPlan.slides[0].relationToPrevious, undefined);
   assert.equal(normalized.deckPlan.slides[0].titleIntent.length > 0, true);
+  assert.equal(normalized.deckPlan.slides[0].requiredItems.length, 0);
+  assert.equal(normalized.deckPlan.slides[2].requiredItems[0].slot, "hook_question");
+  assert.equal(normalized.deckPlan.slides[2].requiredItems[0].kind, "questions");
+  assert.equal(normalized.deckPlan.slides[3].requiredItems[0].slot, "keywords");
+  assert.equal(normalized.deckPlan.slides[3].requiredItems[0].kind, "terms");
   assert.equal(normalized.deckPlan.slides[4].requiredItems[0].kind, "bullets");
+  assert.equal(normalized.deckPlan.slides[4].requiredItems[0].slot, "bullets");
   assert.equal(normalized.deckPlan.slides[4].requiredItems[0].key, undefined);
   assert.equal(normalized.deckPlan.slides[4].requiredItems[0].description, undefined);
+  assert.equal(normalized.deckPlan.slides[5].requiredItems[0].slot, "left_bullets");
+  assert.equal(normalized.deckPlan.slides[5].requiredItems[1].slot, "right_bullets");
   assert.equal(normalized.deckPlan.slides[6].requiredItems[0].kind, "steps");
+  assert.equal(normalized.deckPlan.slides[6].requiredItems[0].slot, "steps");
   assert.equal(normalized.deckPlan.slides[6].slideType, "timeline");
   assert.equal(normalized.deckPlan.slides[8].requiredItems[0].kind, "questions");
+  assert.equal(normalized.deckPlan.slides[8].requiredItems[0].slot, "questions");
   assert.equal(normalized.deckPlan.slides[9].relationToNext, undefined);
   assert.equal(normalized.deckPlan.slides[9].claim.length > 0, true);
-  assert.equal(normalized.deckPlan.slides[3].requiredItems.length, 0);
   assert.equal(normalized.deckPlan.slides[3].visualSuggestions.length, 5);
   assert.equal(normalized.normalization.applied, true);
-  assert.equal(normalized.normalization.normalizedKindAliases, 3);
+  assert.equal(normalized.normalization.normalizedKindAliases, 4);
   assert.equal(normalized.normalization.movedVisualSuggestions, 4);
+  assert.ok(normalized.normalization.droppedNonContentRequiredItems >= 1);
+  assert.ok(normalized.normalization.remappedRequiredItems >= 4);
+  assert.ok(normalized.normalization.slotContractWarnings.some((warning) => warning.includes("cover requiredItem")));
   assert.ok(normalized.normalization.normalizedNullOptionals >= 7);
   assert.ok(normalized.normalization.normalizedSlideTypes >= 1);
   assert.ok(normalized.normalization.warnings.some((warning) => warning.includes("bullet -> bullets")));
   assert.ok(normalized.normalization.warnings.some((warning) => warning.includes("relationToPrevious")));
   assert.throws(() => normalizeLlmDeckPlanCandidate({ ...rawLlmPlan, centralQuestion: "", slides: [] }, planRequest));
   assert.throws(() => normalizeLlmDeckPlanCandidate({ ...rawLlmPlan, centralQuestion: null }, planRequest));
+  const autoPlan = normalizeLlmDeckPlanCandidate({ ...rawLlmPlan, presentationType: "auto" }, planRequest);
+  assert.equal(autoPlan.deckPlan.presentationType, "historical_overview");
+
+  const uiPlan = buildPlanForUi(normalized.deckPlan, [{ code: "empty_must_include", severity: "warn", slide: 1, message: "example warning" }]);
+  assert.equal(uiPlan.version, 1);
+  assert.equal(uiPlan.topic, "Османская империя");
+  assert.ok(uiPlan.editableFields.includes("slides[].claim"));
+  assert.ok(uiPlan.hiddenFields.includes("deckPlanRoute"));
+  assert.equal(uiPlan.slides[0].editable, true);
+  assert.equal(uiPlan.uiWarnings[0].code, "empty_must_include");
 
   const jobWithPlan = createJobSchema.safeParse({
     presentationId: 123,

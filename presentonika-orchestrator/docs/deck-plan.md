@@ -37,7 +37,7 @@ Response:
     "grade": "7",
     "language": "ru",
     "slideCount": 10,
-    "presentationType": "causes_consequences",
+    "presentationType": "historical_overview",
     "centralQuestion": "...",
     "thesis": "...",
     "slides": [
@@ -62,6 +62,30 @@ Response:
     "source": "llm",
     "createdAt": "2026-05-03T00:00:00.000Z"
   },
+  "planForUi": {
+    "version": 1,
+    "topic": "Османская империя",
+    "language": "ru",
+    "slideCount": 10,
+    "presentationType": "historical_overview",
+    "centralQuestion": "...",
+    "thesis": "...",
+    "slides": [
+      {
+        "slide": 1,
+        "slideType": "cover",
+        "role": "frame",
+        "titleIntent": "Поставить главный вопрос и рамку урока.",
+        "claim": "...",
+        "mustInclude": ["..."],
+        "mustAvoid": ["..."],
+        "requiredItems": [],
+        "visualSuggestions": [],
+        "editable": true
+      }
+    ],
+    "uiWarnings": []
+  },
   "diagnostics": {
     "source": "llm",
     "llmUsed": true,
@@ -72,10 +96,19 @@ Response:
       "normalizedKindAliases": 2,
       "movedVisualSuggestions": 1,
       "droppedInvalidRequiredItems": 0,
+      "normalizedRequiredItems": 1,
+      "droppedNonContentRequiredItems": 1,
+      "remappedRequiredItems": 1,
+      "slotContractWarnings": [
+        "slide 1: dropped cover requiredItem; cover has no countable content slots"
+      ],
       "normalizedNullOptionals": 1,
       "warnings": [
         "slide 5: normalized requiredItem kind bullet -> bullets"
       ]
+    },
+    "planDiagnostics": {
+      "warnings": []
     }
   }
 }
@@ -125,7 +158,7 @@ Existing `/jobs` requests still work. If `deckPlan` is absent, the worker builds
 
 DeckPlan now owns the slide structure. Each slide should include a canonical `slideType` such as `cover`, `goals`, `hook`, `context`, `definition`, `bullets`, `comparison`, `twoCol`, `steps`, `timeline`, `examples`, `quiz`, `summary`, or `visual_explanation`. The layout engine selects layouts from that `slideType`; slide numbers no longer force `s8=examples`, `s9=quiz`, or `s10=summary`.
 
-When defining required counts, prefer `slot` plus `kind`:
+When defining required counts, prefer `slot` plus `kind`. Required items must target real content slots for the slide type. Do not create count requirements for `title`, `subtitle`, or `meta`.
 
 ```json
 {

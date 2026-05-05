@@ -7,7 +7,7 @@ import { getQueue, getQueueRedisConnection } from "./queue";
 import { createJobSchema } from "./schema";
 import { registerStagedRoutes } from "./staged/stagedRoutes";
 import { startCleanupService } from "./cleanup/cleanupService";
-import { generateDeckPlan } from "./deckPlan";
+import { buildPlanForUi, generateDeckPlan } from "./deckPlan";
 
 const port = Number(process.env.PORT || 8080);
 const mockWpEnabled = process.env.ENABLE_MOCK_WP === "true";
@@ -94,6 +94,7 @@ app.post("/plans", async (request, reply) => {
     return {
       ok: true,
       deckPlan: result.deckPlan,
+      planForUi: buildPlanForUi(result.deckPlan, result.diagnostics.planDiagnostics?.warnings || []),
       diagnostics: result.diagnostics,
     };
   } catch (error) {

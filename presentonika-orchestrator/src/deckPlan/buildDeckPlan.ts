@@ -60,7 +60,7 @@ const presentationTypeForTopic = (topicKind: TopicKind, requested: DeckPlanPrese
   if (requested !== "auto") return requested;
   if (topicKind === "literary_figure") return "literary_analysis";
   if (topicKind === "person") return "biography_contribution";
-  if (topicKind === "historical") return "causes_consequences";
+  if (topicKind === "historical") return "historical_overview";
   if (topicKind === "science") return "process";
   return "lesson";
 };

@@ -1,4 +1,4 @@
-import type { DeckPlan, DeckPlanRequiredItem, DeckPlanSlide } from "../deckPlan";
+import { isCountableSlotForSlideType, nonCountedDeckPlanSlots, normalizeDeckPlanSlot, type DeckPlan, type DeckPlanRequiredItem, type DeckPlanSlide } from "../deckPlan";
 
 export type ContentQaSeverity = "info" | "warn" | "error";
 export type ContentQaLayer = "format" | "content" | "plan";
@@ -406,25 +406,16 @@ const addFormatIssues = (params: {
   }
 };
 
-const nonCountableSlots = new Set(["title", "subtitle", "meta", "definition", "keywords", "sources", "homework", "task"]);
-const countableSlots = new Set(["bullets", "examples", "questions", "steps", "summary", "goals", "plan", "left_bullets", "right_bullets"]);
-
-const normalizeSlotName = (slot?: string): string | undefined => slot
-  ?.toLowerCase()
-  .replace(/[^a-z0-9_]+/gi, "_")
-  .replace(/_+/g, "_")
-  .replace(/^_+|_+$/g, "");
-
 const keyLooksDynamic = (key?: string): boolean => typeof key === "string" && /^s\d+_[a-z0-9_]+$/i.test(key);
 
-const slotForRequiredItem = (item: DeckPlanRequiredItem): string | undefined => {
-  const slot = normalizeSlotName(item.slot);
-  if (slot && nonCountableSlots.has(slot)) return undefined;
-  if (slot && countableSlots.has(slot)) return slot;
+const slotForRequiredItem = (item: DeckPlanRequiredItem, slide?: DeckPlanSlide): string | undefined => {
+  const slot = normalizeDeckPlanSlot(item.slot);
+  if (slot && nonCountedDeckPlanSlots.has(slot)) return undefined;
+  if (slot && slide && isCountableSlotForSlideType(slide.slideType, slot)) return slot;
 
   const keySlot = keyLooksDynamic(item.key) ? slotFromKey(item.key || "") : undefined;
-  if (keySlot && nonCountableSlots.has(keySlot)) return undefined;
-  if (keySlot && countableSlots.has(keySlot)) return keySlot;
+  if (keySlot && nonCountedDeckPlanSlots.has(keySlot)) return undefined;
+  if (keySlot && slide && isCountableSlotForSlideType(slide.slideType, keySlot)) return keySlot;
 
   if (item.kind === "examples") return "examples";
   if (item.kind === "questions") return "questions";
@@ -531,7 +522,7 @@ const assessDeckPlanAdherence = (params: {
   for (const slide of deckPlan.slides) {
     for (const item of slide.requiredItems) {
       if (!item.exact) continue;
-      const slot = slotForRequiredItem(item);
+      const slot = slotForRequiredItem(item, slide);
       if (!slot) continue;
       const counted = countLinesOrKeys({ fills, slide: slide.slide, slot, item });
       if (!counted.matched) {
@@ -647,7 +638,7 @@ const assessDeckPlanAdherence = (params: {
     const key = dynamicFillKey(slide.slide, "examples");
     const examples = fills[key] || "";
     const exampleLines = linesOf(examples);
-    const expected = slide.requiredItems.find((item) => item.exact && slotForRequiredItem(item) === "examples")?.count;
+    const expected = slide.requiredItems.find((item) => item.exact && slotForRequiredItem(item, slide) === "examples")?.count;
     if (examples.trim() && expected && exampleLines.length < expected) {
       pushIssue(issues, {
         code: "examples_count_low",
