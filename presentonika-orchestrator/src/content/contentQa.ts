@@ -567,10 +567,29 @@ const assessDeckPlanAdherence = (params: {
         continue;
       }
       if (counted.count !== item.count) {
-        const severity: ContentQaSeverity = item.kind === "terms" && counted.count >= item.count && counted.count <= 5 ? "warn" : "error";
+        if (item.kind === "terms") {
+          const preferredMax = Math.max(item.count, 5);
+          if (counted.count >= item.count && counted.count <= preferredMax) {
+            continue;
+          }
+          pushIssue(issues, {
+            code: "required_count_mismatch",
+            severity: "warn",
+            layer: "plan",
+            key: counted.key,
+            slide: slide.slide,
+            message: counted.count < item.count
+              ? `DeckPlan prefers at least ${item.count} compact terms, got ${counted.count}.`
+              : `Terms block is too dense; preferred ${item.count}-${preferredMax} compact terms, got ${counted.count}.`,
+            sample: counted.sample,
+            expected: { preferredMin: item.count, preferredMax },
+            actual: counted.count,
+          });
+          continue;
+        }
         pushIssue(issues, {
           code: "required_count_mismatch",
-          severity,
+          severity: "error",
           layer: "plan",
           key: counted.key,
           slide: slide.slide,
@@ -581,7 +600,7 @@ const assessDeckPlanAdherence = (params: {
         });
         pushIssue(issues, {
           code: "weak_exact_count_instruction",
-          severity,
+          severity: "error",
           layer: "plan",
           key: counted.key,
           slide: slide.slide,
@@ -700,11 +719,11 @@ const assessDeckPlanAdherence = (params: {
     const understandingCount = quizLines.filter((line) => understandingQuizPatterns.some((pattern) => pattern.test(line))).length;
     if (understandingCount < Math.min(2, quizLines.length) || overlapScore(quizText, `${deckPlan.centralQuestion} ${deckPlan.thesis}`) < 0.06) {
       pushIssue(issues, {
-        code: "quiz_not_testing_narrative",
+        code: "quiz_not_testing_central_argument",
         severity: "warn",
         layer: "content",
         slide: slide.slide,
-        message: "Quiz does not sufficiently test the central argument and slide sequence.",
+        message: "Quiz does not sufficiently test the central argument and DeckPlan route.",
         sample: quizText.slice(0, 160),
       });
     }
@@ -1097,7 +1116,6 @@ export const runContentQa = (params: {
     "repeated_central_claim",
     "duplicated_goal_plan",
     "conclusion_not_answering_question",
-    "goals_not_matching_narrative_plan",
     "goals_not_matching_deck_plan",
     "hook_not_connected_to_following_slides",
     "deck_plan_hook_missing_problem",
@@ -1105,7 +1123,7 @@ export const runContentQa = (params: {
     "deck_plan_conclusion_weak_answer",
     "examples_not_used_as_evidence",
     "examples_not_argumentative",
-    "quiz_not_testing_narrative",
+    "quiz_not_testing_central_argument",
     "disconnected_slide_sequence",
   ]);
 

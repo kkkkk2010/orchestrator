@@ -71,7 +71,7 @@ export const runContentQaTests = (): void => {
   assert.ok(codes.has("generic_sources"));
   assert.ok(codes.has("repeated_central_claim"));
   assert.ok(codes.has("duplicated_goal_plan"));
-  assert.ok(codes.has("quiz_not_testing_narrative"));
+  assert.ok(codes.has("quiz_not_testing_central_argument"));
   assert.ok(report.stats.requiredCountMismatchCount >= 1);
   assert.ok(report.stats.overclaimRiskCount >= 1);
   assert.ok(report.stats.chronologyRiskCount >= 1);
@@ -172,7 +172,7 @@ export const runContentQaTests = (): void => {
   assert.ok(dynamicIssues.some((issue) => issue.key === "s9_step1" && issue.slide === 9 && issue.expected === 4 && issue.actual === 3));
   assert.equal(dynamicIssues.some((issue) => issue.key === "s1_title"), false);
   assert.ok(dynamicReport.issues.some((issue) => issue.code === "memory_only_quiz" && issue.slide === 8));
-  assert.ok(dynamicReport.issues.some((issue) => issue.code === "quiz_not_testing_narrative" && issue.slide === 8));
+  assert.ok(dynamicReport.issues.some((issue) => issue.code === "quiz_not_testing_central_argument" && issue.slide === 8));
   assert.equal(dynamicReport.issues.some((issue) => issue.slide === 9 && `${issue.sample || ""}`.includes("check understanding")), false);
   assert.equal(dynamicReport.issues.some((issue) => `${issue.key || ""}` === "s8_examples" || `${issue.key || ""}` === "s9_summary"), false);
 
@@ -196,11 +196,31 @@ export const runContentQaTests = (): void => {
     topic: "Османская империя",
     deckPlan: termsDeckPlan,
   });
-  const commaTermsMismatch = commaTermsReport.issues.find((issue) => issue.code === "required_count_mismatch" && issue.key === "s4_keywords");
-  assert.equal(commaTermsMismatch?.actual, 4);
-  assert.equal(commaTermsMismatch?.expected, 3);
-  assert.equal(commaTermsMismatch?.severity, "warn");
+  assert.equal(commaTermsReport.issues.some((issue) => issue.code === "required_count_mismatch" && issue.key === "s4_keywords"), false);
   assert.ok(commaTermsReport.score >= 80);
+
+  const fiveTermsReport = runContentQa({
+    fills: {
+      s4_keywords: "Анатолийский бейлик, Гази, Сельджуки, Византия, Миллетная система",
+    },
+    fillKeys: ["s4_keywords"],
+    topic: "Османская империя",
+    deckPlan: termsDeckPlan,
+  });
+  assert.equal(fiveTermsReport.issues.some((issue) => issue.code === "required_count_mismatch" && issue.key === "s4_keywords"), false);
+
+  const tooManyTermsReport = runContentQa({
+    fills: {
+      s4_keywords: "Анатолийский бейлик, Гази, Сельджуки, Византия, Миллетная система, Стамбул, Янычары",
+    },
+    fillKeys: ["s4_keywords"],
+    topic: "Османская империя",
+    deckPlan: termsDeckPlan,
+  });
+  const tooManyTermsMismatch = tooManyTermsReport.issues.find((issue) => issue.code === "required_count_mismatch" && issue.key === "s4_keywords");
+  assert.equal(tooManyTermsMismatch?.actual, 7);
+  assert.deepEqual(tooManyTermsMismatch?.expected, { preferredMin: 3, preferredMax: 5 });
+  assert.equal(tooManyTermsMismatch?.severity, "warn");
 
   const bulletTermsReport = runContentQa({
     fills: {

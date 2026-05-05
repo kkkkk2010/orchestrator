@@ -20,6 +20,12 @@ import {
   normalizeDeckPlanSlot,
   slotContractsPromptText,
 } from "./slideTypeContracts";
+import {
+  fallbackMustIncludeForSlide,
+  sanitizeUserFacingArray,
+  sanitizeUserFacingText,
+  type UserFacingCleanupWarning,
+} from "./userFacingCleanup";
 
 export type PlannerNormalizationDiagnostics = {
   applied: boolean;
@@ -33,6 +39,8 @@ export type PlannerNormalizationDiagnostics = {
   normalizedNullOptionals: number;
   normalizedSlideTypes: number;
   normalizedSlideRoles: number;
+  filledMustIncludeFallbacks: number;
+  languageScriptMismatches: number;
   warnings: string[];
 };
 
@@ -112,6 +120,7 @@ export const buildPlannerPrompt = (request: CreatePlanRequest): string => {
     "Avoid 10 independent overview slides, repeated thesis, fake claims, overclaims, and unsupported promises.",
     "Use readable claims suitable for showing to a teacher in an editor.",
     "For history/state topics use precise academic wording: 'анатолийский бейлик' instead of 'кочевое племя' when relevant; 'система управления религиозными общинами' instead of simplistic 'религиозная терпимость'; prefer 'сыграла важную роль' over absolute claims.",
+    "For Russian history plans avoid presenting 'религиозная терпимость' as an absolute. Prefer nuanced wording such as 'система управления религиозными общинами', 'относительная автономия общин', or 'миллетная система' when relevant.",
     `topic: ${request.topic}`,
     `subject: ${request.subject || ""}`,
     `grade: ${request.grade || ""}`,
@@ -402,8 +411,11 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
     normalizedNullOptionals: 0,
     normalizedSlideTypes: 0,
     normalizedSlideRoles: 0,
+    filledMustIncludeFallbacks: 0,
+    languageScriptMismatches: 0,
     warnings: [],
   };
+  const cleanupWarnings: UserFacingCleanupWarning[] = [];
 
   const normalizeOptionalString = (value: unknown, path: string, maxLength: number): string | undefined => {
     if (value === null) {
@@ -463,20 +475,53 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
     normalization.warnings.push("createdAt: ignored LLM timestamp and used server timestamp");
   }
 
+  const language = typeof record.language === "string" ? record.language : request.language || "ru";
+  const topic = typeof record.topic === "string" && record.topic.trim() ? record.topic : request.topic;
+  const centralQuestionFallback = language.toLowerCase().startsWith("ru")
+    ? `Почему тема «${topic}» важна для понимания урока?`
+    : `Why does "${topic}" matter for this lesson?`;
+  const thesisFallback = language.toLowerCase().startsWith("ru")
+    ? `${topic}: объяснить ключевые причины, механизмы и выводы через связный маршрут урока.`
+    : `${topic}: explain the key causes, mechanisms, and conclusions through a coherent lesson route.`;
+
   const withDefaults: Record<string, unknown> = {
     ...record,
     version: 1,
-    topic: typeof record.topic === "string" && record.topic.trim() ? record.topic : request.topic,
+    topic,
     subject: typeof record.subject === "string" ? record.subject : request.subject,
     grade: typeof record.grade === "string" ? record.grade : request.grade,
-    language: typeof record.language === "string" ? record.language : request.language || "ru",
+    language,
     slideCount: typeof record.slideCount === "number" ? record.slideCount : request.slideCount || 10,
     presentationType: resolvedPresentationType,
+    centralQuestion: typeof record.centralQuestion === "string"
+      ? sanitizeUserFacingText({
+        value: trimForSchema(record.centralQuestion, 420),
+        fallback: centralQuestionFallback,
+        language,
+        path: "centralQuestion",
+        warnings: cleanupWarnings,
+      })
+      : record.centralQuestion,
+    thesis: typeof record.thesis === "string"
+      ? sanitizeUserFacingText({
+        value: trimForSchema(record.thesis, 520),
+        fallback: thesisFallback,
+        language,
+        path: "thesis",
+        warnings: cleanupWarnings,
+      })
+      : record.thesis,
     source: "llm",
     createdAt: new Date().toISOString(),
   };
   withDefaults.audience = normalizeOptionalString(record.audience, "audience", 160);
-  withDefaults.globalRules = normalizeStringArray(record.globalRules, "globalRules");
+  withDefaults.globalRules = sanitizeUserFacingArray({
+    values: normalizeStringArray(record.globalRules, "globalRules"),
+    fallbackValues: [],
+    language,
+    path: "globalRules",
+    warnings: cleanupWarnings,
+  });
 
   const slides = Array.isArray(withDefaults.slides) ? withDefaults.slides : [];
   withDefaults.slides = slides.map((slideRaw: unknown, slideIndex: number) => {
@@ -508,9 +553,17 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
       if (kind !== rawKind) {
         normalization.warnings.push(`slide ${slideNo}: normalized visualSuggestion kind ${rawKind} -> ${kind}`);
       }
+      const descriptionFallback = ru ? `Визуальная подсказка ${kind} для слайда ${slideNo}` : `Suggested ${kind} for slide ${slideNo}`;
       visualSuggestions.push({
         kind,
-        description: normalizeRequiredString(suggestion.description, `slides.${slideIndex}.visualSuggestions.description`, ru ? `Визуальная подсказка ${kind} для слайда ${slideNo}` : `Suggested ${kind} for slide ${slideNo}`, 240),
+        description: sanitizeUserFacingText({
+          value: normalizeRequiredString(suggestion.description, `slides.${slideIndex}.visualSuggestions.description`, descriptionFallback, 240),
+          fallback: descriptionFallback,
+          language: String(withDefaults.language || "ru"),
+          path: `slides.${slideIndex}.visualSuggestions.description`,
+          slide: slideNo,
+          warnings: cleanupWarnings,
+        }),
       });
     }
     const requiredItems = Array.isArray(slide.requiredItems) ? slide.requiredItems : [];
@@ -526,9 +579,17 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
       }
 
       if (visualKinds.has(rawKind) || (rawKind === "timeline" && shouldTreatTimelineAsVisual(item))) {
+        const descriptionFallback = ru ? `Визуальная подсказка ${rawKind} для слайда ${slideNo}` : `Suggested ${rawKind} for slide ${slideNo}`;
         visualSuggestions.push({
           kind: normalizeVisualKind(rawKind),
-          description: normalizeRequiredString(item.description, `slides.${slideIndex}.requiredItems.description`, ru ? `Визуальная подсказка ${rawKind} для слайда ${slideNo}` : `Suggested ${rawKind} for slide ${slideNo}`, 240),
+          description: sanitizeUserFacingText({
+            value: normalizeRequiredString(item.description, `slides.${slideIndex}.requiredItems.description`, descriptionFallback, 240),
+            fallback: descriptionFallback,
+            language: String(withDefaults.language || "ru"),
+            path: `slides.${slideIndex}.requiredItems.description`,
+            slide: slideNo,
+            warnings: cleanupWarnings,
+          }),
         });
         normalization.movedVisualSuggestions += 1;
         normalization.warnings.push(`slide ${slideNo}: moved requiredItem kind=${rawKind} to visualSuggestions`);
@@ -563,26 +624,89 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
       items: nextRequiredItems,
       normalization,
     });
-    const titleIntent = normalizeRequiredString(slide.titleIntent, `slides.${slideIndex}.titleIntent`, titleIntentFallback, 180);
-    const claim = normalizeRequiredString(slide.claim, `slides.${slideIndex}.claim`, claimFallback, 420);
-    const role = normalizeSlideRoleForUi({
-      slideType: normalizedSlideType,
-      role: normalizeRequiredString(slide.role, `slides.${slideIndex}.role`, "evidence_mechanism", 80),
-      titleIntent,
-      claim,
-      slideNo,
-      normalization,
+    const titleIntent = sanitizeUserFacingText({
+      value: normalizeRequiredString(slide.titleIntent, `slides.${slideIndex}.titleIntent`, titleIntentFallback, 180),
+      fallback: titleIntentFallback,
+      language: String(withDefaults.language || "ru"),
+      path: `slides.${slideIndex}.titleIntent`,
+      slide: slideNo,
+      warnings: cleanupWarnings,
+    });
+    const claim = sanitizeUserFacingText({
+      value: normalizeRequiredString(slide.claim, `slides.${slideIndex}.claim`, claimFallback, 420),
+      fallback: claimFallback,
+      language: String(withDefaults.language || "ru"),
+      path: `slides.${slideIndex}.claim`,
+      slide: slideNo,
+      warnings: cleanupWarnings,
+    });
+    const role = sanitizeUserFacingText({
+      value: normalizeSlideRoleForUi({
+        slideType: normalizedSlideType,
+        role: normalizeRequiredString(slide.role, `slides.${slideIndex}.role`, "evidence_mechanism", 80),
+        titleIntent,
+        claim,
+        slideNo,
+        normalization,
+      }),
+      fallback: "evidence_mechanism",
+      language: String(withDefaults.language || "ru"),
+      path: `slides.${slideIndex}.role`,
+      slide: slideNo,
+      warnings: cleanupWarnings,
     });
 
-    const normalizedSlide = {
+    const slideForFallback = {
       ...slide,
+      slide: slideNo,
       slideType: normalizedSlideType,
       role,
       titleIntent,
       claim,
-      mustInclude: normalizeStringArray(slide.mustInclude, `slides.${slideIndex}.mustInclude`),
-      mustAvoid: normalizeStringArray(slide.mustAvoid, `slides.${slideIndex}.mustAvoid`),
-      expectedEvidence: normalizeStringArray(slide.expectedEvidence, `slides.${slideIndex}.expectedEvidence`),
+      mustInclude: [],
+      mustAvoid: [],
+      expectedEvidence: [],
+      requiredItems: contractRequiredItems,
+      visualSuggestions,
+    } as DeckPlan["slides"][number];
+    const normalizedMustInclude = normalizeStringArray(slide.mustInclude, `slides.${slideIndex}.mustInclude`);
+    if (normalizedMustInclude.length === 0) {
+      normalization.filledMustIncludeFallbacks += 1;
+      normalization.warnings.push(`slide ${slideNo}: filled empty mustInclude with deterministic UI fallback`);
+    }
+
+    const normalizedSlide = {
+      ...slide,
+      slide: slideNo,
+      slideType: normalizedSlideType,
+      role,
+      titleIntent,
+      claim,
+      mustInclude: sanitizeUserFacingArray({
+        values: normalizedMustInclude,
+        fallbackValues: fallbackMustIncludeForSlide(slideForFallback, String(withDefaults.language || "ru")),
+        language: String(withDefaults.language || "ru"),
+        path: `slides.${slideIndex}.mustInclude`,
+        slide: slideNo,
+        warnings: cleanupWarnings,
+        maxItems: 4,
+      }),
+      mustAvoid: sanitizeUserFacingArray({
+        values: normalizeStringArray(slide.mustAvoid, `slides.${slideIndex}.mustAvoid`),
+        fallbackValues: [],
+        language: String(withDefaults.language || "ru"),
+        path: `slides.${slideIndex}.mustAvoid`,
+        slide: slideNo,
+        warnings: cleanupWarnings,
+      }),
+      expectedEvidence: sanitizeUserFacingArray({
+        values: normalizeStringArray(slide.expectedEvidence, `slides.${slideIndex}.expectedEvidence`),
+        fallbackValues: [],
+        language: String(withDefaults.language || "ru"),
+        path: `slides.${slideIndex}.expectedEvidence`,
+        slide: slideNo,
+        warnings: cleanupWarnings,
+      }),
       requiredItems: contractRequiredItems,
       visualSuggestions,
       relationToPrevious: normalizeOptionalString(slide.relationToPrevious, `slides.${slideIndex}.relationToPrevious`, 240),
@@ -590,6 +714,13 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
     };
     return Object.fromEntries(Object.entries(normalizedSlide).filter(([, value]) => value !== undefined));
   });
+
+  for (const warning of cleanupWarnings) {
+    if (warning.code === "language_script_mismatch") {
+      normalization.languageScriptMismatches += 1;
+    }
+    normalization.warnings.push(`${warning.slide ? `slide ${warning.slide}: ` : ""}${warning.code}: ${warning.sample || warning.message}`);
+  }
 
   normalization.applied = normalization.normalizedKindAliases > 0
     || normalization.movedVisualSuggestions > 0
@@ -600,6 +731,8 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
     || normalization.normalizedNullOptionals > 0
     || normalization.normalizedSlideTypes > 0
     || normalization.normalizedSlideRoles > 0
+    || normalization.filledMustIncludeFallbacks > 0
+    || normalization.languageScriptMismatches > 0
     || normalization.warnings.length > 0;
   normalization.slotContractWarnings = normalization.slotContractWarnings.slice(0, 20);
   normalization.warnings = normalization.warnings.slice(0, 20);

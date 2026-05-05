@@ -177,7 +177,39 @@ export const runDeckPlanTests = async (): Promise<void> => {
   assert.ok(uiPlan.editableFields.advanced.includes("slides[].requiredItems"));
   assert.ok(uiPlan.hiddenFields.includes("deckPlanRoute"));
   assert.equal(uiPlan.slides[0].editable, true);
-  assert.equal(uiPlan.uiWarnings[0].code, "empty_must_include");
+  assert.equal(uiPlan.uiWarnings.some((warning) => warning.code === "empty_must_include"), false);
+
+  const emptyIncludePlan = {
+    ...normalized.deckPlan,
+    slides: normalized.deckPlan.slides.map((slide) => ({ ...slide, mustInclude: [] })),
+  };
+  const emptyIncludeUi = buildPlanForUi(emptyIncludePlan, [
+    { code: "empty_must_include", severity: "warn", slide: 1, message: "example warning" },
+  ]);
+  assert.equal(emptyIncludeUi.slides.every((slide) => slide.mustInclude.length >= 2 && slide.mustInclude.length <= 4), true);
+  assert.equal(emptyIncludeUi.uiWarnings.some((warning) => warning.code === "empty_must_include"), false);
+
+  const cjkPlan = {
+    ...rawLlmPlan,
+    centralQuestion: "Почему Османы允许 управлять разными общинами?",
+    thesis: "Османы允许 религиозным общинам сохранять часть автономии.",
+    slides: (rawLlmPlan.slides as unknown[]).map((slideRaw, index) => {
+      const slide = slideRaw as Record<string, unknown>;
+      return {
+        ...slide,
+        mustInclude: [],
+        titleIntent: index === 3 ? "Османы允许 религиозным общинам сохранять автономию" : slide.titleIntent,
+        claim: index === 4 ? "Османы允许 общинам жить внутри системы управления." : slide.claim,
+      };
+    }),
+  };
+  const cjkNormalized = normalizeLlmDeckPlanCandidate(cjkPlan, planRequest);
+  const cjkUi = buildPlanForUi(cjkNormalized.deckPlan);
+  const cjkUiJson = JSON.stringify(cjkUi);
+  assert.equal(cjkNormalized.deckPlan.slides.every((slide) => slide.mustInclude.length >= 2), true);
+  assert.ok(cjkNormalized.normalization.filledMustIncludeFallbacks >= 10);
+  assert.ok(cjkNormalized.normalization.languageScriptMismatches >= 3);
+  assert.equal(cjkUiJson.includes("允许"), false);
 
   const jobWithPlan = createJobSchema.safeParse({
     presentationId: 123,
