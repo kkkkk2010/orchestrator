@@ -35,6 +35,11 @@ export const deckPlanRequiredItemSchema = z.object({
   description: z.string().max(240).optional(),
 });
 
+export const deckPlanVisualSuggestionSchema = z.object({
+  kind: z.enum(["map", "diagram", "table", "image", "chart", "timeline", "other"]),
+  description: z.string().min(1).max(240),
+});
+
 const requiredItemsSchema = z.preprocess((value) => value ?? [], z.array(deckPlanRequiredItemSchema).max(8));
 
 export const deckPlanSlideSchema = z.object({
@@ -46,6 +51,7 @@ export const deckPlanSlideSchema = z.object({
   mustAvoid: z.array(z.string().min(1).max(180)).max(10).default([]),
   requiredItems: requiredItemsSchema,
   expectedEvidence: z.array(z.string().min(1).max(180)).max(10).default([]),
+  visualSuggestions: z.array(deckPlanVisualSuggestionSchema).max(8).default([]),
   relationToPrevious: z.string().max(240).optional(),
   relationToNext: z.string().max(240).optional(),
 });
@@ -109,6 +115,7 @@ export type DeckPlanPresentationType = z.infer<typeof deckPlanPresentationTypeSc
 export type DeckPlanSource = z.infer<typeof deckPlanSourceSchema>;
 export type DeckPlanSlideRole = z.infer<typeof deckPlanSlideRoleSchema>;
 export type DeckPlanRequiredItem = z.infer<typeof deckPlanRequiredItemSchema>;
+export type DeckPlanVisualSuggestion = z.infer<typeof deckPlanVisualSuggestionSchema>;
 export type DeckPlanSlide = z.infer<typeof deckPlanSlideSchema>;
 export type DeckPlan = z.infer<typeof deckPlanSchema>;
 export type CreatePlanRequest = z.infer<typeof createPlanRequestSchema>;

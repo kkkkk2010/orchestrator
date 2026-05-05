@@ -14,26 +14,27 @@ const roleBySlide: Record<number, DeckPlanSlideRole> = {
   10: "conclusion",
 };
 
-const requiredItemsForSlide = (slide: number): DeckPlanRequiredItem[] => {
+const requiredItemsForSlide = (slide: number, language: string): DeckPlanRequiredItem[] => {
+  const ru = language.toLowerCase().startsWith("ru");
   switch (slide) {
     case 2:
       return [
-        { key: "s2_goals", kind: "bullets", count: 3, exact: true, description: "what students should understand" },
-        { key: "s2_plan", kind: "route_items", count: 3, exact: true, description: "route through the argument" },
+        { key: "s2_goals", kind: "bullets", count: 3, exact: true, description: ru ? "что ученики должны понять" : "what students should understand" },
+        { key: "s2_plan", kind: "route_items", count: 3, exact: true, description: ru ? "маршрут доказательства" : "route through the argument" },
       ];
     case 5:
-      return [{ key: "s5_bullets", kind: "bullets", count: 5, exact: true, description: "fact plus significance" }];
+      return [{ key: "s5_bullets", kind: "bullets", count: 5, exact: true, description: ru ? "факт плюс значение" : "fact plus significance" }];
     case 6:
       return [
         { key: "s6_left_bullets", kind: "bullets", count: 3, exact: true },
         { key: "s6_right_bullets", kind: "bullets", count: 3, exact: true },
       ];
     case 8:
-      return [{ key: "s8_examples", kind: "examples", count: 4, exact: true, description: "examples as evidence for the thesis" }];
+      return [{ key: "s8_examples", kind: "examples", count: 4, exact: true, description: ru ? "примеры как доказательство тезиса" : "examples as evidence for the thesis" }];
     case 9:
-      return [{ kind: "questions", count: 3, exact: true, description: "questions that test understanding, not memory only" }];
+      return [{ kind: "questions", count: 3, exact: true, description: ru ? "вопросы на понимание, а не только на память" : "questions that test understanding, not memory only" }];
     case 10:
-      return [{ key: "s10_summary", kind: "summary", count: 3, exact: true, description: "conclusions that answer the central question" }];
+      return [{ key: "s10_summary", kind: "summary", count: 3, exact: true, description: ru ? "выводы, отвечающие на главный вопрос" : "conclusions that answer the central question" }];
     default:
       return [];
   }
@@ -48,11 +49,27 @@ const presentationTypeForTopic = (topicKind: TopicKind, requested: DeckPlanPrese
   return "lesson";
 };
 
-const mustAvoidForSlide = (slide: number, topicKind: TopicKind): string[] => {
-  const common = [
-    "do not repeat the thesis mechanically",
-    "avoid unsupported absolute claims",
-  ];
+const mustAvoidForSlide = (slide: number, topicKind: TopicKind, language: string): string[] => {
+  const ru = language.toLowerCase().startsWith("ru");
+  const common = ru
+    ? [
+      "не повторять тезис механически",
+      "избегать неподтвержденных абсолютных утверждений",
+    ]
+    : [
+      "do not repeat the thesis mechanically",
+      "avoid unsupported absolute claims",
+    ];
+  if (ru) {
+    if (slide === 2) return [...common, "слабые глаголы: познакомиться, узнать, рассмотреть, изучить"];
+    if (slide === 3) return [...common, "шаблонный hook вроде почему это важно или гений или пророк"];
+    if (slide === 4) return [...common, "словарное определение вместо контекста"];
+    if (slide === 8) return [...common, "простой список примеров без доказательной роли"];
+    if (slide === 9) return [...common, "вопросы только на даты и имена"];
+    if (slide === 10) return [...common, "чрезмерно категоричный вывод"];
+    if (topicKind === "literary_figure") return [...common, "утверждения вроде создал весь язык или был первым в истории"];
+    return common;
+  }
   if (slide === 2) return [...common, "weak verbs: познакомиться, узнать, рассмотреть, изучить"];
   if (slide === 3) return [...common, "generic hook such as почему это важно or гений или пророк"];
   if (slide === 4) return [...common, "dictionary-like definition slide"];
@@ -63,7 +80,35 @@ const mustAvoidForSlide = (slide: number, topicKind: TopicKind): string[] => {
   return common;
 };
 
-const titleIntentForRole = (role: DeckPlanSlideRole): string => {
+const relationForSlide = (slide: number, slideCount: number, language: string, direction: "previous" | "next"): string | undefined => {
+  if (direction === "previous" && slide <= 1) return undefined;
+  if (direction === "next" && slide >= slideCount) return undefined;
+  if (language.toLowerCase().startsWith("ru")) {
+    return direction === "previous"
+      ? "Продолжает предыдущий шаг сценария и добавляет новый аргумент."
+      : "Подводит к следующему шагу сценария без повтора тезиса.";
+  }
+  return direction === "previous"
+    ? "Continues the previous scenario step and adds a new argument."
+    : "Sets up the next scenario step without repeating the thesis.";
+};
+
+const titleIntentForRole = (role: DeckPlanSlideRole, language: string): string => {
+  if (language.toLowerCase().startsWith("ru")) {
+    switch (role) {
+      case "frame": return "Поставить главный вопрос и рамку урока.";
+      case "route": return "Показать, что поймём и каким маршрутом докажем.";
+      case "problem_hook": return "Открыть конкретную проблему или парадокс.";
+      case "context": return "Объяснить контекст, нужный для аргумента.";
+      case "evidence_mechanism": return "Показать главный механизм или доказательство.";
+      case "comparison": return "Сравнить этапы, стороны или модели для прояснения тезиса.";
+      case "development_over_time": return "Показать развитие как осмысленную последовательность.";
+      case "examples_as_evidence": return "Использовать примеры как доказательство тезиса.";
+      case "check_understanding": return "Проверить понимание центрального аргумента.";
+      case "conclusion": return "Ответить на главный вопрос без чрезмерных обобщений.";
+    }
+  }
+
   switch (role) {
     case "frame": return "Set the central question and lesson frame.";
     case "route": return "Show what we will understand and how we will prove it.";
@@ -82,6 +127,8 @@ export const buildDeterministicDeckPlan = (request: CreatePlanRequest, source: "
   const topicKind = detectTopicKind(request.topic);
   const narrative = buildNarrativePlan({ topic: request.topic });
   const slideCount = request.slideCount || 10;
+  const language = request.language || "ru";
+  const ru = language.toLowerCase().startsWith("ru");
   const presentationType = presentationTypeForTopic(topicKind, request.presentationType || "auto");
   const slides: DeckPlanSlide[] = [];
 
@@ -92,14 +139,15 @@ export const buildDeterministicDeckPlan = (request: CreatePlanRequest, source: "
     slides.push({
       slide: slideNumber,
       role,
-      titleIntent: titleIntentForRole(role),
+      titleIntent: titleIntentForRole(role, language),
       claim: narrativeSlide?.focus || `Advance the central question on slide ${slideNumber}.`,
       mustInclude: narrativeSlide?.expectedKeywords?.slice(0, 5) || [],
-      mustAvoid: mustAvoidForSlide(slideNumber, topicKind),
-      requiredItems: requiredItemsForSlide(slideNumber),
+      mustAvoid: mustAvoidForSlide(slideNumber, topicKind, language),
+      requiredItems: requiredItemsForSlide(slideNumber, language),
       expectedEvidence: narrativeSlide?.expectedKeywords?.slice(0, 5) || [],
-      relationToPrevious: narrativeSlide?.relationToPrevious,
-      relationToNext: narrativeSlide?.relationToNext,
+      visualSuggestions: [],
+      relationToPrevious: relationForSlide(slideNumber, slideCount, language, "previous") || narrativeSlide?.relationToPrevious,
+      relationToNext: relationForSlide(slideNumber, slideCount, language, "next") || narrativeSlide?.relationToNext,
     });
   }
 
@@ -108,20 +156,33 @@ export const buildDeterministicDeckPlan = (request: CreatePlanRequest, source: "
     topic: request.topic,
     subject: request.subject,
     grade: request.grade,
-    language: request.language || "ru",
+    language,
     slideCount,
     presentationType,
     centralQuestion: narrative.centralQuestion,
     thesis: narrative.thesis,
-    audience: [request.subject, request.grade].filter(Boolean).join(", ") || "school learners",
+    audience: ru
+      ? [
+        request.subject ? `предмет: ${request.subject}` : "",
+        request.grade ? `класс: ${request.grade}` : "",
+      ].filter(Boolean).join(", ") || "школьники"
+      : [request.subject, request.grade].filter(Boolean).join(", ") || "school learners",
     slides,
-    globalRules: [
-      "Treat the deck as one coherent lesson, not independent slides.",
-      "Each slide must advance the central question.",
-      "Do not repeat the thesis on every slide.",
-      "Use cautious academic wording for factual claims.",
-      "Examples must work as evidence, not as a plain list.",
-    ],
+    globalRules: ru
+      ? [
+        "Рассматривать презентацию как единый урок, а не набор отдельных слайдов.",
+        "Каждый слайд должен продвигать главный вопрос.",
+        "Не повторять тезис на каждом слайде.",
+        "Использовать осторожные академические формулировки для фактов.",
+        "Примеры должны работать как доказательство, а не как простой список.",
+      ]
+      : [
+        "Treat the deck as one coherent lesson, not independent slides.",
+        "Each slide must advance the central question.",
+        "Do not repeat the thesis on every slide.",
+        "Use cautious academic wording for factual claims.",
+        "Examples must work as evidence, not as a plain list.",
+      ],
     source,
     createdAt: new Date().toISOString(),
   };

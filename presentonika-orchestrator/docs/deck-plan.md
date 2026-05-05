@@ -44,12 +44,13 @@ Response:
       {
         "slide": 1,
         "role": "frame",
-        "titleIntent": "Set the central question and lesson frame.",
+        "titleIntent": "Поставить главный вопрос и рамку урока.",
         "claim": "...",
         "mustInclude": ["..."],
         "mustAvoid": ["..."],
         "requiredItems": [],
-        "expectedEvidence": []
+        "expectedEvidence": [],
+        "visualSuggestions": []
       }
     ],
     "globalRules": [
@@ -64,7 +65,16 @@ Response:
     "source": "llm",
     "llmUsed": true,
     "model": "deepseek-chat",
-    "timingMs": 1200
+    "timingMs": 1200,
+    "plannerNormalization": {
+      "applied": true,
+      "normalizedKindAliases": 2,
+      "movedVisualSuggestions": 1,
+      "droppedInvalidRequiredItems": 0,
+      "warnings": [
+        "slide 5: normalized requiredItem kind bullet -> bullets"
+      ]
+    }
   }
 }
 ```
@@ -119,11 +129,13 @@ Planner cost is controlled by API service environment variables:
 PLAN_GENERATION_ENABLED=true
 PLAN_LLM_ENABLED=false
 PLAN_MODEL=deepseek-chat
-PLAN_MAX_OUTPUT_TOKENS=1200
+PLAN_MAX_OUTPUT_TOKENS=3000
 PLAN_TIMEOUT_MS=30000
 PLAN_FAIL_ON_ERROR=false
 PLAN_API_KEY=
 PLAN_BASE_URL=https://api.deepseek.com
 ```
+
+For 10-slide plans, keep `PLAN_MAX_OUTPUT_TOKENS` around `3000-5000`. The default is `3000`; very large values such as `40000` are not needed for normal DeckPlan generation.
 
 `/plans` is the only explicit planner entry point. Fill generation in `/jobs` does not call the planner.

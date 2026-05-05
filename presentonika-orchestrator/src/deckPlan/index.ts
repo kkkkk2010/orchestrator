@@ -1,6 +1,6 @@
 export { buildDeterministicDeckPlan } from "./buildDeckPlan";
-export { generateDeckPlan } from "./planner";
-export type { PlanGenerationDiagnostics, PlanGenerationResult } from "./planner";
+export { generateDeckPlan, normalizeLlmDeckPlanCandidate } from "./planner";
+export type { PlanGenerationDiagnostics, PlanGenerationResult, PlannerNormalizationDiagnostics } from "./planner";
 export {
   createPlanRequestSchema,
   deckPlanPresentationTypeSchema,
@@ -9,6 +9,7 @@ export {
   deckPlanSlideRoleSchema,
   deckPlanSlideSchema,
   deckPlanSourceSchema,
+  deckPlanVisualSuggestionSchema,
 } from "./schema";
 export type {
   CreatePlanRequest,
@@ -18,4 +19,5 @@ export type {
   DeckPlanSlide,
   DeckPlanSlideRole,
   DeckPlanSource,
+  DeckPlanVisualSuggestion,
 } from "./schema";
