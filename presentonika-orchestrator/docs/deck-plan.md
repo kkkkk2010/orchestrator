@@ -71,6 +71,7 @@ Response:
       "normalizedKindAliases": 2,
       "movedVisualSuggestions": 1,
       "droppedInvalidRequiredItems": 0,
+      "normalizedNullOptionals": 1,
       "warnings": [
         "slide 5: normalized requiredItem kind bullet -> bullets"
       ]

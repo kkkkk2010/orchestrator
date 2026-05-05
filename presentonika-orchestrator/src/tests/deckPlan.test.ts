@@ -54,22 +54,33 @@ export const runDeckPlanTests = async (): Promise<void> => {
     topic: planRequest.topic,
     subject: planRequest.subject,
     grade: planRequest.grade,
+    audience: null,
     presentationType: "causes_consequences",
     source: "llm",
     slides: deckPlan.slides.map((slide) => {
+      if (slide.slide === 1) {
+        return {
+          ...slide,
+          relationToPrevious: null,
+          titleIntent: null,
+          mustInclude: [null, "главный вопрос"],
+        };
+      }
       if (slide.slide === 4) {
         return {
           ...slide,
+          relationToPrevious: "",
           requiredItems: [
             { kind: "map", count: 1, exact: false, description: "карта расширения империи" },
             { kind: "diagram", count: 1, exact: false, description: "схема управления" },
             { kind: "image", count: 1, exact: false, description: "изображение Стамбула" },
             { kind: "table", count: 1, exact: false, description: "таблица периодов" },
           ],
+          visualSuggestions: [{ kind: "chart", description: null }],
         };
       }
       if (slide.slide === 5) {
-        return { ...slide, requiredItems: [{ key: "s5_bullets", kind: "bullet", count: 5, exact: true }] };
+        return { ...slide, requiredItems: [{ key: null, kind: "bullet", count: 5, exact: true, description: null }] };
       }
       if (slide.slide === 7) {
         return { ...slide, requiredItems: [{ kind: "timeline", count: 4, exact: true, description: "текстовая последовательность этапов" }] };
@@ -77,21 +88,34 @@ export const runDeckPlanTests = async (): Promise<void> => {
       if (slide.slide === 9) {
         return { ...slide, requiredItems: [{ kind: "question", count: 3, exact: true }] };
       }
+      if (slide.slide === 10) {
+        return { ...slide, relationToNext: null, claim: null };
+      }
       return slide;
     }),
   };
   const normalized = normalizeLlmDeckPlanCandidate(rawLlmPlan, planRequest);
   assert.equal(normalized.deckPlan.source, "llm");
+  assert.equal(normalized.deckPlan.audience, undefined);
+  assert.equal(normalized.deckPlan.slides[0].relationToPrevious, undefined);
+  assert.equal(normalized.deckPlan.slides[0].titleIntent.length > 0, true);
   assert.equal(normalized.deckPlan.slides[4].requiredItems[0].kind, "bullets");
+  assert.equal(normalized.deckPlan.slides[4].requiredItems[0].key, undefined);
+  assert.equal(normalized.deckPlan.slides[4].requiredItems[0].description, undefined);
   assert.equal(normalized.deckPlan.slides[6].requiredItems[0].kind, "steps");
   assert.equal(normalized.deckPlan.slides[8].requiredItems[0].kind, "questions");
+  assert.equal(normalized.deckPlan.slides[9].relationToNext, undefined);
+  assert.equal(normalized.deckPlan.slides[9].claim.length > 0, true);
   assert.equal(normalized.deckPlan.slides[3].requiredItems.length, 0);
-  assert.equal(normalized.deckPlan.slides[3].visualSuggestions.length, 4);
+  assert.equal(normalized.deckPlan.slides[3].visualSuggestions.length, 5);
   assert.equal(normalized.normalization.applied, true);
   assert.equal(normalized.normalization.normalizedKindAliases, 3);
   assert.equal(normalized.normalization.movedVisualSuggestions, 4);
+  assert.ok(normalized.normalization.normalizedNullOptionals >= 7);
   assert.ok(normalized.normalization.warnings.some((warning) => warning.includes("bullet -> bullets")));
+  assert.ok(normalized.normalization.warnings.some((warning) => warning.includes("relationToPrevious")));
   assert.throws(() => normalizeLlmDeckPlanCandidate({ ...rawLlmPlan, centralQuestion: "", slides: [] }, planRequest));
+  assert.throws(() => normalizeLlmDeckPlanCandidate({ ...rawLlmPlan, centralQuestion: null }, planRequest));
 
   const jobWithPlan = createJobSchema.safeParse({
     presentationId: 123,

@@ -8,6 +8,7 @@ export type PlannerNormalizationDiagnostics = {
   normalizedKindAliases: number;
   movedVisualSuggestions: number;
   droppedInvalidRequiredItems: number;
+  normalizedNullOptionals: number;
   warnings: string[];
 };
 
@@ -51,6 +52,8 @@ const buildPlannerPrompt = (request: CreatePlanRequest): string => {
     "DeckPlan is a scenario contract, not slide text and not UI copy.",
     "Required shape: version, topic, subject?, grade?, language, slideCount, presentationType, centralQuestion, thesis, audience?, slides[], globalRules[], source, createdAt.",
     "Each slide item: slide, role, titleIntent, claim, mustInclude[], mustAvoid[], requiredItems[], expectedEvidence[], relationToPrevious?, relationToNext?.",
+    "Do not use null anywhere. If an optional value such as relationToPrevious/relationToNext is absent, omit the field.",
+    "titleIntent and claim must always be non-empty strings.",
     "Use roles: frame, route, problem_hook, context, evidence_mechanism, comparison, development_over_time, examples_as_evidence, check_understanding, conclusion.",
     "requiredItems item: {key?, kind, count, exact, description?}; kind MUST be one of: bullets, examples, questions, terms, steps, summary, route_items.",
     "Do NOT put map/image/diagram/table/chart into requiredItems. Put visual ideas into visualSuggestions: [{kind, description}] where kind is map, diagram, table, image, chart, timeline, or other.",
@@ -109,6 +112,8 @@ const normalizeVisualKind = (kind: string): "map" | "diagram" | "table" | "image
 
 const trimForSchema = (value: string, maxLength: number): string => value.trim().slice(0, maxLength);
 
+const isBlankString = (value: unknown): value is string => typeof value === "string" && value.trim().length === 0;
+
 const shouldTreatTimelineAsVisual = (item: Record<string, unknown>): boolean => {
   const text = [item.description, item.key, item.label, item.title]
     .filter((value): value is string => typeof value === "string")
@@ -127,7 +132,54 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
     normalizedKindAliases: 0,
     movedVisualSuggestions: 0,
     droppedInvalidRequiredItems: 0,
+    normalizedNullOptionals: 0,
     warnings: [],
+  };
+
+  const normalizeOptionalString = (value: unknown, path: string, maxLength: number): string | undefined => {
+    if (value === null) {
+      normalization.normalizedNullOptionals += 1;
+      normalization.warnings.push(`${path}: removed null optional string`);
+      return undefined;
+    }
+    if (isBlankString(value)) {
+      normalization.warnings.push(`${path}: removed empty optional string`);
+      return undefined;
+    }
+    return typeof value === "string" ? trimForSchema(value, maxLength) : undefined;
+  };
+
+  const normalizeRequiredString = (value: unknown, path: string, fallbackValue: string, maxLength: number): string => {
+    if (value === null) {
+      normalization.normalizedNullOptionals += 1;
+      normalization.warnings.push(`${path}: replaced null string with fallback`);
+      return fallbackValue;
+    }
+    if (isBlankString(value)) {
+      normalization.warnings.push(`${path}: replaced empty string with fallback`);
+      return fallbackValue;
+    }
+    return typeof value === "string" ? trimForSchema(value, maxLength) : fallbackValue;
+  };
+
+  const normalizeStringArray = (value: unknown, path: string): string[] => {
+    if (value === null) {
+      normalization.normalizedNullOptionals += 1;
+      normalization.warnings.push(`${path}: replaced null array with []`);
+      return [];
+    }
+    if (!Array.isArray(value)) return [];
+    return value
+      .flatMap((item, index) => {
+        if (item === null) {
+          normalization.normalizedNullOptionals += 1;
+          normalization.warnings.push(`${path}.${index}: removed null string`);
+          return [];
+        }
+        if (isBlankString(item)) return [];
+        return typeof item === "string" ? [trimForSchema(item, 180)] : [];
+      })
+      .slice(0, 10);
   };
 
   const withDefaults: Record<string, unknown> = {
@@ -142,16 +194,25 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
     source: "llm",
     createdAt: typeof record.createdAt === "string" ? record.createdAt : new Date().toISOString(),
   };
+  withDefaults.audience = normalizeOptionalString(record.audience, "audience", 160);
+  withDefaults.globalRules = normalizeStringArray(record.globalRules, "globalRules");
 
   const slides = Array.isArray(withDefaults.slides) ? withDefaults.slides : [];
   withDefaults.slides = slides.map((slideRaw: unknown, slideIndex: number) => {
     const slide = { ...asRecord(slideRaw) };
+    const slideNo = typeof slide.slide === "number" ? slide.slide : slideIndex + 1;
+    const ru = String(withDefaults.language || "ru").toLowerCase().startsWith("ru");
+    const titleIntentFallback = ru
+      ? `Описать роль слайда ${slideNo} в сценарии урока.`
+      : `Describe the role of slide ${slideNo} in the lesson plan.`;
+    const claimFallback = ru
+      ? `Продвинуть главный вопрос на слайде ${slideNo}.`
+      : `Advance the central question on slide ${slideNo}.`;
     const visualSuggestions: unknown[] = [];
     const rawVisualSuggestions = Array.isArray(slide.visualSuggestions) ? slide.visualSuggestions : [];
     for (const suggestionRaw of rawVisualSuggestions) {
       const suggestion = asRecord(suggestionRaw);
       const rawKind = typeof suggestion.kind === "string" ? suggestion.kind.trim().toLowerCase() : "";
-      const slideNo = typeof slide.slide === "number" ? slide.slide : slideIndex + 1;
       if (!rawKind) {
         normalization.warnings.push(`slide ${slideNo}: dropped visualSuggestion without kind`);
         continue;
@@ -162,9 +223,7 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
       }
       visualSuggestions.push({
         kind,
-        description: typeof suggestion.description === "string" && suggestion.description.trim()
-          ? trimForSchema(suggestion.description, 240)
-          : `Suggested ${kind} for slide ${slideNo}`,
+        description: normalizeRequiredString(suggestion.description, `slides.${slideIndex}.visualSuggestions.description`, ru ? `Визуальная подсказка ${kind} для слайда ${slideNo}` : `Suggested ${kind} for slide ${slideNo}`, 240),
       });
     }
     const requiredItems = Array.isArray(slide.requiredItems) ? slide.requiredItems : [];
@@ -173,7 +232,6 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
     for (const itemRaw of requiredItems) {
       const item = { ...asRecord(itemRaw) };
       const rawKind = typeof item.kind === "string" ? item.kind.trim().toLowerCase() : "";
-      const slideNo = typeof slide.slide === "number" ? slide.slide : slideIndex + 1;
       if (!rawKind) {
         normalization.droppedInvalidRequiredItems += 1;
         normalization.warnings.push(`slide ${slideNo}: dropped requiredItem without kind`);
@@ -183,9 +241,7 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
       if (visualKinds.has(rawKind) || (rawKind === "timeline" && shouldTreatTimelineAsVisual(item))) {
         visualSuggestions.push({
           kind: normalizeVisualKind(rawKind),
-          description: typeof item.description === "string" && item.description.trim()
-            ? trimForSchema(item.description, 240)
-            : `Suggested ${rawKind} for slide ${slideNo}`,
+          description: normalizeRequiredString(item.description, `slides.${slideIndex}.requiredItems.description`, ru ? `Визуальная подсказка ${rawKind} для слайда ${slideNo}` : `Suggested ${rawKind} for slide ${slideNo}`, 240),
         });
         normalization.movedVisualSuggestions += 1;
         normalization.warnings.push(`slide ${slideNo}: moved requiredItem kind=${rawKind} to visualSuggestions`);
@@ -203,21 +259,36 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
         normalization.normalizedKindAliases += 1;
         normalization.warnings.push(`slide ${slideNo}: normalized requiredItem kind ${rawKind} -> ${normalizedKind}`);
       }
-      nextRequiredItems.push({ ...item, kind: normalizedKind });
+      const normalizedItem = {
+        ...item,
+        kind: normalizedKind,
+        key: normalizeOptionalString(item.key, `slides.${slideIndex}.requiredItems.key`, 120),
+        description: normalizeOptionalString(item.description, `slides.${slideIndex}.requiredItems.description`, 240),
+      };
+      nextRequiredItems.push(Object.fromEntries(Object.entries(normalizedItem).filter(([, value]) => value !== undefined)));
     }
 
-    return {
+    const normalizedSlide = {
       ...slide,
+      titleIntent: normalizeRequiredString(slide.titleIntent, `slides.${slideIndex}.titleIntent`, titleIntentFallback, 180),
+      claim: normalizeRequiredString(slide.claim, `slides.${slideIndex}.claim`, claimFallback, 420),
+      mustInclude: normalizeStringArray(slide.mustInclude, `slides.${slideIndex}.mustInclude`),
+      mustAvoid: normalizeStringArray(slide.mustAvoid, `slides.${slideIndex}.mustAvoid`),
+      expectedEvidence: normalizeStringArray(slide.expectedEvidence, `slides.${slideIndex}.expectedEvidence`),
       requiredItems: nextRequiredItems,
       visualSuggestions,
+      relationToPrevious: normalizeOptionalString(slide.relationToPrevious, `slides.${slideIndex}.relationToPrevious`, 240),
+      relationToNext: normalizeOptionalString(slide.relationToNext, `slides.${slideIndex}.relationToNext`, 240),
     };
+    return Object.fromEntries(Object.entries(normalizedSlide).filter(([, value]) => value !== undefined));
   });
 
   normalization.applied = normalization.normalizedKindAliases > 0
     || normalization.movedVisualSuggestions > 0
     || normalization.droppedInvalidRequiredItems > 0
+    || normalization.normalizedNullOptionals > 0
     || normalization.warnings.length > 0;
-  normalization.warnings = normalization.warnings.slice(0, 10);
+  normalization.warnings = normalization.warnings.slice(0, 20);
 
   return {
     deckPlan: deckPlanSchema.parse(withDefaults),
