@@ -19,10 +19,12 @@ import { runContentQaTests } from "./contentQa.test";
 import { runPlanImageReplacementsTests } from "./planImageReplacements.test";
 import { runNarrativePlanTests } from "./narrativePlan.test";
 import { runDeckPlanTests } from "./deckPlan.test";
+import { runThemeQaTests } from "./themeQa.test";
 
 const run = async (): Promise<void> => {
   runPlaceholderTests();
   runThemeStoreTests();
+  runThemeQaTests();
   runContentQaTests();
   runNarrativePlanTests();
   await runDeckPlanTests();

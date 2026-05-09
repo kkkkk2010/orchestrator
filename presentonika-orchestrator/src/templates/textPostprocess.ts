@@ -1,6 +1,7 @@
 import type { PlaceholderLocation } from "./applyFills";
 
 export type StyleRole = "title" | "subtitle" | "body" | "small" | "muted" | "bullets";
+type ThemeMode = "dark" | "light";
 
 type TextKind = "title" | "bullets" | "body";
 
@@ -14,7 +15,7 @@ export type TypographyConfig = {
     body: string;
     muted: string;
   };
-  mode: "dark" | "light";
+  mode: ThemeMode;
 };
 
 export type TextFitItem = {
@@ -49,6 +50,11 @@ const toRecord = (value: unknown): Record<string, unknown> | null => {
 };
 
 const readNum = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+
+const readThemeMode = (theme: unknown): ThemeMode | null => {
+  const mode = toRecord(theme)?.mode;
+  return mode === "dark" || mode === "light" ? mode : null;
+};
 
 const clip = (value: string, max: number): string => {
   if (value.length <= max) return value;
@@ -127,13 +133,13 @@ export const normalizeBulletLineFormatting = (value: string): FormatNormalizatio
   };
 };
 
-const defaultTypography = (themeId: string): TypographyConfig => {
+const defaultTypography = (themeId: string, themeMode: ThemeMode | null): TypographyConfig => {
   const normalized = themeId.toLowerCase();
-  const dark = normalized.includes("dark");
+  const mode = themeMode ?? (normalized.includes("dark") ? "dark" : "light");
 
-  if (dark) {
+  if (mode === "dark") {
     return {
-      fontFamily: process.env.FONT_FAMILY_DEFAULT || "Times New Roman",
+      fontFamily: "Times New Roman",
       scale: parseTypographyScale(),
       sizes: { title: 48, subtitle: 30, body: 24, small: 16, muted: 16, bullets: 22 },
       lineHeights: { title: 1.06, subtitle: 1.12, body: 1.22, small: 1.15, muted: 1.15, bullets: 1.18 },
@@ -142,13 +148,12 @@ const defaultTypography = (themeId: string): TypographyConfig => {
     };
   }
 
-  const isLight = normalized.includes("light");
   return {
-    fontFamily: process.env.FONT_FAMILY_DEFAULT || "Times New Roman",
+    fontFamily: "Times New Roman",
     scale: parseTypographyScale(),
     sizes: { title: 48, subtitle: 30, body: 24, small: 16, muted: 16, bullets: 22 },
     lineHeights: { title: 1.06, subtitle: 1.12, body: 1.22, small: 1.15, muted: 1.15, bullets: 1.18 },
-    colors: isLight
+    colors: themeMode === "light" || normalized.includes("light")
       ? { title: "#111111", body: "#222222", muted: "#555555" }
       : { title: "#111111", body: "#111111", muted: "#444444" },
     mode: "light",
@@ -156,16 +161,24 @@ const defaultTypography = (themeId: string): TypographyConfig => {
 };
 
 export const resolveThemeTypography = (themeId: string, theme: unknown): TypographyConfig => {
-  const base = defaultTypography(themeId);
+  const base = defaultTypography(themeId, readThemeMode(theme));
   const typography = toRecord(toRecord(theme)?.typography);
   const sizes = toRecord(typography?.sizes);
   const lineHeights = toRecord(typography?.lineHeights);
   const colors = toRecord(typography?.colors);
   const useThemeSizes = process.env.TYPOGRAPHY_USE_THEME_SIZES === "true";
-  const forcedFontFamily = (process.env.FONT_FAMILY_DEFAULT || "Times New Roman").trim() || "Times New Roman";
+  const envFontFamily = process.env.FONT_FAMILY_DEFAULT?.trim() ?? "";
+  const themeFontFamily = typeof typography?.fontFamily === "string" ? typography.fontFamily.trim() : "";
+  const fontFamily = envFontFamily || themeFontFamily || "Times New Roman";
 
-  const readSize = (role: StyleRole): number => useThemeSizes ? (readNum(sizes?.[role]) ?? base.sizes[role]) : base.sizes[role];
-  const readLineHeight = (role: StyleRole): number => useThemeSizes ? (readNum(lineHeights?.[role]) ?? base.lineHeights[role]) : base.lineHeights[role];
+  const readSize = (role: StyleRole, fallbackRole: StyleRole = role): number => {
+    if (!useThemeSizes) return base.sizes[role];
+    return readNum(sizes?.[role]) ?? (fallbackRole !== role ? readNum(sizes?.[fallbackRole]) : null) ?? base.sizes[fallbackRole];
+  };
+  const readLineHeight = (role: StyleRole, fallbackRole: StyleRole = role): number => {
+    if (!useThemeSizes) return base.lineHeights[role];
+    return readNum(lineHeights?.[role]) ?? (fallbackRole !== role ? readNum(lineHeights?.[fallbackRole]) : null) ?? base.lineHeights[fallbackRole];
+  };
 
   const scale = parseTypographyScale();
   const applyScale = (value: number): number => Math.max(10, Math.round(value * scale));
@@ -173,22 +186,22 @@ export const resolveThemeTypography = (themeId: string, theme: unknown): Typogra
   return {
     ...base,
     scale,
-    fontFamily: forcedFontFamily,
+    fontFamily,
     sizes: {
       title: applyScale(readSize("title")),
       subtitle: applyScale(readSize("subtitle")),
       body: applyScale(readSize("body")),
       small: applyScale(readSize("small")),
-      muted: applyScale(readSize("small")),
-      bullets: applyScale(readSize("body")),
+      muted: applyScale(readSize("muted", "small")),
+      bullets: applyScale(readSize("bullets", "body")),
     },
     lineHeights: {
       title: readLineHeight("title"),
       subtitle: readLineHeight("subtitle"),
       body: readLineHeight("body"),
       small: readLineHeight("small"),
-      muted: readLineHeight("small"),
-      bullets: readLineHeight("body"),
+      muted: readLineHeight("muted", "small"),
+      bullets: readLineHeight("bullets", "body"),
     },
     colors: {
       title: typeof colors?.title === "string" ? colors.title : base.colors.title,
