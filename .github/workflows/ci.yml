@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  workflow_dispatch:
+
+jobs:
+  orchestrator:
+    name: Orchestrator checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: presentonika-orchestrator
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Validate Docker Compose config
+        run: docker compose config --quiet
+
+      - name: Validate production Docker Compose config
+        run: docker compose -f docker-compose.prod.yml config --quiet
