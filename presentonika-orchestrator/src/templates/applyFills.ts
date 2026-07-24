@@ -22,6 +22,7 @@ export type RemainingTokenSample = {
 export type RemainingTokenStats = {
   remainingTestTokensCount: number;
   remainingMustacheTokensCount: number;
+  remainingKeys: string[];
   remainingSamples: RemainingTokenSample[];
 };
 
@@ -230,13 +231,34 @@ export const applyFillsByLocations = (
 export const scanRemainingFillTokens = (doc: unknown, maxSamples = 10): RemainingTokenStats => {
   let remainingTestTokensCount = 0;
   let remainingMustacheTokensCount = 0;
+  const remainingKeys = new Set<string>();
   const remainingSamples: RemainingTokenSample[] = [];
   const visited = new Set<object>();
 
   const walk = (node: unknown, path: string): void => {
     if (typeof node === "string") {
-      const testCount = (node.match(/TEST_[a-zA-Z0-9_:-]+/g) || []).length;
-      const mustacheCount = (node.match(/{{\s*[a-zA-Z0-9_:-]+\s*}}/g) || []).length;
+      let testCount = 0;
+      let mustacheCount = 0;
+
+      const testRegex = /TEST_<?([a-zA-Z0-9_:-]+)>?/g;
+      let testMatch = testRegex.exec(node);
+      while (testMatch) {
+        testCount += 1;
+        if (testMatch[1]) {
+          remainingKeys.add(testMatch[1]);
+        }
+        testMatch = testRegex.exec(node);
+      }
+
+      const mustacheRegex = /{{\s*([a-zA-Z0-9_:-]+)\s*}}/g;
+      let mustacheMatch = mustacheRegex.exec(node);
+      while (mustacheMatch) {
+        mustacheCount += 1;
+        if (mustacheMatch[1]) {
+          remainingKeys.add(mustacheMatch[1]);
+        }
+        mustacheMatch = mustacheRegex.exec(node);
+      }
 
       remainingTestTokensCount += testCount;
       remainingMustacheTokensCount += mustacheCount;
@@ -271,17 +293,29 @@ export const scanRemainingFillTokens = (doc: unknown, maxSamples = 10): Remainin
 
   walk(doc, "");
 
+  const remainingKeysList = [...remainingKeys];
+  Object.defineProperty(remainingSamples, "remainingKeys", {
+    value: remainingKeysList,
+    enumerable: false,
+  });
+
   return {
     remainingTestTokensCount,
     remainingMustacheTokensCount,
+    remainingKeys: remainingKeysList,
     remainingSamples,
   };
 };
 
 
 export const extractRemainingKeys = (samples: RemainingTokenSample[]): string[] => {
+  const attachedKeys = (samples as RemainingTokenSample[] & { remainingKeys?: string[] }).remainingKeys;
+  if (Array.isArray(attachedKeys)) {
+    return [...new Set(attachedKeys)];
+  }
+
   const found = new Set<string>();
-  const testRegex = /TEST_([A-Za-z0-9_:-]+)/g;
+  const testRegex = /TEST_<?([A-Za-z0-9_:-]+)>?/g;
   const mustacheRegex = /{{\s*([A-Za-z0-9_:-]+)\s*}}/g;
 
   for (const sample of samples) {
