@@ -18,6 +18,21 @@ export const runQualityGateTests = (): void => {
 
   {
     const doc = {
+      slides: Array.from({ length: 12 }, (_, index) => ({
+        elements: [{ text: `TEST_s${index + 1}_title` }],
+      })),
+    };
+
+    const remaining = scanRemainingFillTokens(doc);
+    assert.equal(remaining.remainingSamples.length, 10);
+    assert.equal(remaining.remainingTestTokensCount, 12);
+    const expectedKeys = Array.from({ length: 12 }, (_, index) => `s${index + 1}_title`).sort();
+    assert.deepEqual(remaining.remainingKeys.sort(), expectedKeys);
+    assert.deepEqual(extractRemainingKeys(remaining.remainingSamples).sort(), expectedKeys);
+  }
+
+  {
+    const doc = {
       slides: [{ elements: [{ text: "{{s1_title}} {{s2_title}}" }] }],
     };
     const locations: PlaceholderLocation[] = [
@@ -29,6 +44,7 @@ export const runQualityGateTests = (): void => {
     const remaining = scanRemainingFillTokens(doc);
     assert.equal(remaining.remainingMustacheTokensCount, 0);
     assert.equal(remaining.remainingTestTokensCount, 0);
+    assert.deepEqual(remaining.remainingKeys, []);
   }
 
   {
