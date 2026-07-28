@@ -66,6 +66,18 @@ const readTheme = (themeId: string): Record<string, unknown> => {
   return toRecord(JSON.parse(fs.readFileSync(themePath, "utf8")) as unknown, `${themeId} theme.json`);
 };
 
+const validateThemeTemplate = (themeId: string): void => {
+  const templatePath = path.resolve("themes", themeId, "template.out.zip");
+  const template = fs.readFileSync(templatePath);
+  assert.ok(template.length > 1024, `${themeId} template.out.zip is unexpectedly small`);
+  assert.deepEqual(
+    [...template.subarray(0, 4)],
+    [0x50, 0x4b, 0x03, 0x04],
+    `${themeId} template.out.zip must be a ZIP archive`,
+  );
+  assert.ok(template.includes(Buffer.from("doc.json")), `${themeId} template.out.zip must contain doc.json`);
+};
+
 const validateThemeJson = (themeId: string): void => {
   const theme = readTheme(themeId);
   assertOnlyKeys(theme, TOP_LEVEL_KEYS, `${themeId} top-level`);
@@ -213,6 +225,7 @@ const runBackgroundNormalizationTests = (): void => {
 
 export const runThemeQaTests = (): void => {
   THEME_IDS.forEach(validateThemeJson);
+  THEME_IDS.forEach(validateThemeTemplate);
   runTypographyResolverTests();
   runBackgroundNormalizationTests();
 };

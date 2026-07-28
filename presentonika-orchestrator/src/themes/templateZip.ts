@@ -5,7 +5,8 @@ const openZip = (zipPath: string): Promise<yauzl.ZipFile> => {
   return new Promise((resolve, reject) => {
     yauzl.open(zipPath, { lazyEntries: true }, (error, zipFile) => {
       if (error || !zipFile) {
-        reject(error ?? new Error(`TemplateInvalid: unable to open zip ${zipPath}`));
+        const detail = error instanceof Error ? error.message : "unable to open archive";
+        reject(new Error(`TemplateInvalid: unable to open ${zipPath}: ${detail}`));
         return;
       }
       resolve(zipFile);

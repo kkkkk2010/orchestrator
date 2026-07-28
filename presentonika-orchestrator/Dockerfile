@@ -10,7 +10,7 @@ COPY themes ./themes
 COPY README.md ./README.md
 COPY docs ./docs
 
-RUN npm run build
+RUN npm test && npm run build
 
 FROM node:22-alpine AS runtime
 WORKDIR /app
