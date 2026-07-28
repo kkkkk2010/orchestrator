@@ -1,11 +1,24 @@
 import { z } from "zod";
 import { deckPlanSchema } from "./deckPlan";
 
+const saveEndpointSchema = z.string().min(1).url().superRefine((value, context) => {
+  if (process.env.NODE_ENV !== "production") return;
+  const endpoint = new URL(value);
+  const allowedOrigins = (process.env.ORCHESTRATOR_SAVE_ENDPOINT_ORIGINS || "https://www.presentonika.ru")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  if (endpoint.protocol !== "https:" || !allowedOrigins.includes(endpoint.origin)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "save.endpoint origin is not allowed" });
+  }
+});
+
 export const createJobSchema = z.object({
-  presentationId: z.number(),
-  userId: z.number(),
-  topic: z.string().min(1),
-  themeId: z.string().min(1),
+  presentationId: z.number().int().positive(),
+  userId: z.number().int().positive(),
+  topic: z.string().trim().min(1).max(500),
+  themeId: z.string().trim().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/),
   language: z.string().optional(),
   deckPlan: deckPlanSchema.optional(),
   debug: z
@@ -23,10 +36,18 @@ export const createJobSchema = z.object({
     })
     .optional(),
   save: z.object({
-    endpoint: z.string().min(1).url(),
-    presentationId: z.number(),
-    saveToken: z.string().min(1),
+    endpoint: saveEndpointSchema,
+    presentationId: z.number().int().positive(),
+    saveToken: z.string().min(1).max(1024),
   }),
+}).superRefine((value, context) => {
+  if (value.presentationId !== value.save.presentationId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["save", "presentationId"],
+      message: "save.presentationId must match presentationId",
+    });
+  }
 });
 
 export type CreateJobPayload = z.infer<typeof createJobSchema>;

@@ -1,6 +1,7 @@
 services:
   redis:
     image: redis:7-alpine
+    user: redis
     restart: unless-stopped
     volumes:
       - redis_data:/data
@@ -10,7 +11,16 @@ services:
       timeout: 3s
       retries: 5
     networks:
-      - presentonika_shared
+      - orchestrator_internal
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16777216
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
 
   orchestrator-api:
     build: .
@@ -21,8 +31,13 @@ services:
       REDIS_URL: redis://redis:6379
       QUEUE_NAME: ${QUEUE_NAME:-presentonika_jobs}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      PRESENTONIKA_ORCHESTRATOR_KEY: ${PRESENTONIKA_ORCHESTRATOR_KEY:-strong-secret-token}
-      ORCHESTRATOR_PUBLIC_KEY: ${ORCHESTRATOR_PUBLIC_KEY:-change-me-long-random-string}
+      PRESENTONIKA_ORCHESTRATOR_KEY: ${PRESENTONIKA_ORCHESTRATOR_KEY:?PRESENTONIKA_ORCHESTRATOR_KEY is required}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      REQUIRE_WORKER_READY: ${REQUIRE_WORKER_READY:-true}
+      ORCHESTRATOR_SAVE_ENDPOINT_ORIGINS: ${ORCHESTRATOR_SAVE_ENDPOINT_ORIGINS:-https://www.presentonika.ru}
+      ENABLE_CLEANUP: ${ENABLE_CLEANUP:-true}
+      ARTIFACT_TTL_SECONDS: ${ARTIFACT_TTL_SECONDS:-86400}
+      CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-600}
       JOBS_RATE_LIMIT_MAX: ${JOBS_RATE_LIMIT_MAX:-30}
       JOBS_RATE_LIMIT_WINDOW_SECONDS: ${JOBS_RATE_LIMIT_WINDOW_SECONDS:-300}
       ENABLE_MOCK_WP: ${ENABLE_MOCK_WP:-false}
@@ -36,7 +51,7 @@ services:
       PLAN_BASE_URL: ${PLAN_BASE_URL:-https://api.deepseek.com}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
-      PUBLIC_ZIP_BASE_URL: ${PUBLIC_ZIP_BASE_URL:-http://localhost:8080}
+      PUBLIC_ZIP_BASE_URL: ${PUBLIC_ZIP_BASE_URL:?PUBLIC_ZIP_BASE_URL is required}
       THEMES_DIR: /app/themes
       STAGED_DIR: ${STAGED_DIR:-.staged}
       STAGED_ENABLE_SERVER: ${STAGED_ENABLE_SERVER:-true}
@@ -44,7 +59,7 @@ services:
       LAYOUT_ENGINE_DIR: /app/layouts-local
       LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT: "false"
       LAYOUT_ENGINE_VARIATION: "true"
-      LAYOUT_DEBUG_LABEL: "true"
+      LAYOUT_DEBUG_LABEL: ${LAYOUT_DEBUG_LABEL:-true}
     depends_on:
       redis:
         condition: service_healthy
@@ -57,12 +72,26 @@ services:
       - ./themes:/app/themes:ro
       - ./layouts-local:/app/layouts-local:ro
     networks:
+      - orchestrator_internal
       - presentonika_shared
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/ready"]
       interval: 15s
       timeout: 5s
       retries: 5
+      start_period: 30s
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0
+    stop_grace_period: 30s
 
   orchestrator-worker:
     build: .
@@ -73,7 +102,7 @@ services:
       QUEUE_NAME: ${QUEUE_NAME:-presentonika_jobs}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
-      PUBLIC_ZIP_BASE_URL: ${PUBLIC_ZIP_BASE_URL:-http://localhost:8080}
+      PUBLIC_ZIP_BASE_URL: ${PUBLIC_ZIP_BASE_URL:?PUBLIC_ZIP_BASE_URL is required}
       THEMES_DIR: /app/themes
       STAGED_DIR: ${STAGED_DIR:-.staged}
       STAGED_ENABLE_SERVER: ${STAGED_ENABLE_SERVER:-true}
@@ -128,12 +157,14 @@ services:
       TYPOGRAPHY_SCALE: "1"
       TYPOGRAPHY_USE_THEME_SIZES: "true"
       TEXT_FIT_TRUNCATE: "false"
-      FAIL_ON_REMAINING_TOKENS: ${FAIL_ON_REMAINING_TOKENS:-false}
+      FAIL_ON_REMAINING_TOKENS: ${FAIL_ON_REMAINING_TOKENS:-true}
       LAYOUT_ENGINE_ENABLED: "true"
       LAYOUT_ENGINE_DIR: /app/layouts-local
       LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT: "false"
       LAYOUT_ENGINE_VARIATION: "true"
-      LAYOUT_DEBUG_LABEL: "true"
+      LAYOUT_DEBUG_LABEL: ${LAYOUT_DEBUG_LABEL:-true}
+      WORKER_HEARTBEAT_INTERVAL_MS: ${WORKER_HEARTBEAT_INTERVAL_MS:-10000}
+      WORKER_HEARTBEAT_TTL_SECONDS: ${WORKER_HEARTBEAT_TTL_SECONDS:-30}
     depends_on:
       redis:
         condition: service_healthy
@@ -144,11 +175,26 @@ services:
       - ./themes:/app/themes:ro
       - ./layouts-local:/app/layouts-local:ro
     networks:
+      - orchestrator_internal
       - presentonika_shared
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: 4g
+    cpus: 4.0
+    stop_grace_period: 2m
 
 volumes:
   redis_data:
 
 networks:
+  orchestrator_internal:
+    internal: true
   presentonika_shared:
     external: true

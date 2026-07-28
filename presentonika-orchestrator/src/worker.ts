@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { Worker } from "bullmq";
-import { getQueueName, getQueueRedisConnection, getWorkerBullConnection } from "./queue";
+import { closeQueueResources, getQueueName, getQueueRedisConnection, getWorkerBullConnection, getWorkerHeartbeatKey } from "./queue";
 import { logger } from "./logger";
 import { assertThemeTemplateExists, getThemeDir, readThemeMap, readThemeSafe } from "./themes/themeStore";
 import { readDocJsonFromTemplateZip } from "./themes/templateZip";
@@ -35,6 +35,7 @@ import { compileLayoutPresentation } from "./layouts";
 import type { LayoutEngineDiagnostics } from "./layouts/types";
 import { runContentQa } from "./content/contentQa";
 import { buildDeterministicDeckPlan } from "./deckPlan";
+import type { DeckPlanSlide } from "./deckPlan/schema";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
 const IMAGE_MISSING_LIMIT = 50;
@@ -930,7 +931,8 @@ const worker = new Worker(
       for (const key of remainingKeys) {
         if (key.startsWith("TEST_")) continue;
         const slideNumber = extractSlideFromKey(key);
-        fills[key] = normalizeText(key, generateLocalFallback({ key, topic, slideNumber }));
+        const slideContext = deckPlan.slides.find((slide: DeckPlanSlide) => slide.slide === slideNumber);
+        fills[key] = normalizeText(key, generateLocalFallback({ key, topic, slideNumber, slideContext }));
         qualityGate.localFallbackAppliedKeysCount += 1;
       }
       applySafeFormatNormalizations(remainingKeys);
@@ -1703,3 +1705,36 @@ worker.on("error", (error) => {
 });
 
 logger.info({ queue: getQueueName(), concurrency }, "worker started");
+
+const heartbeatIntervalMs = Math.max(5_000, Number.parseInt(process.env.WORKER_HEARTBEAT_INTERVAL_MS || "10000", 10));
+const heartbeatTtlSeconds = Math.max(15, Number.parseInt(process.env.WORKER_HEARTBEAT_TTL_SECONDS || "30", 10));
+const writeHeartbeat = async (): Promise<void> => {
+  try {
+    await getQueueRedisConnection().set(
+      getWorkerHeartbeatKey(),
+      JSON.stringify({ timestamp: new Date().toISOString(), pid: process.pid }),
+      "EX",
+      heartbeatTtlSeconds
+    );
+  } catch (error) {
+    logger.warn({ err: error }, "worker heartbeat failed");
+  }
+};
+
+const heartbeatInterval = setInterval(() => void writeHeartbeat(), heartbeatIntervalMs);
+heartbeatInterval.unref();
+void writeHeartbeat();
+
+let shuttingDown = false;
+const shutdown = async (signal: string): Promise<void> => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info({ signal }, "shutting down orchestrator worker");
+  clearInterval(heartbeatInterval);
+  await worker.close().catch((error) => logger.error({ err: error }, "worker close failed"));
+  await getQueueRedisConnection().del(getWorkerHeartbeatKey()).catch(() => undefined);
+  await closeQueueResources();
+};
+
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));

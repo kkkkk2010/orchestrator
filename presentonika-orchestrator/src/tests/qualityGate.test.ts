@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { applyFillsByLocations, extractRemainingKeys, scanRemainingFillTokens } from "../templates/applyFills";
-import { applyTypographyStandards, resolveThemeTypography } from "../templates/textPostprocess";
+import { applyTypographyStandards, generateLocalFallback, normalizeText, resolveThemeTypography } from "../templates/textPostprocess";
 import { buildImagePromptFallback } from "../images/imagePlan";
 import { enforceImagePromptUniqueness } from "../images/imagePrompts";
 import { findMissingSkeletonKeys } from "../tools/templateQa";
@@ -18,6 +18,21 @@ export const runQualityGateTests = (): void => {
 
   {
     const doc = {
+      slides: Array.from({ length: 12 }, (_, index) => ({
+        elements: [{ text: `TEST_s${index + 1}_title` }],
+      })),
+    };
+
+    const remaining = scanRemainingFillTokens(doc);
+    assert.equal(remaining.remainingSamples.length, 10);
+    assert.equal(remaining.remainingTestTokensCount, 12);
+    const expectedKeys = Array.from({ length: 12 }, (_, index) => `s${index + 1}_title`).sort();
+    assert.deepEqual(remaining.remainingKeys.sort(), expectedKeys);
+    assert.deepEqual(extractRemainingKeys(remaining.remainingSamples).sort(), expectedKeys);
+  }
+
+  {
+    const doc = {
       slides: [{ elements: [{ text: "{{s1_title}} {{s2_title}}" }] }],
     };
     const locations: PlaceholderLocation[] = [
@@ -29,6 +44,7 @@ export const runQualityGateTests = (): void => {
     const remaining = scanRemainingFillTokens(doc);
     assert.equal(remaining.remainingMustacheTokensCount, 0);
     assert.equal(remaining.remainingTestTokensCount, 0);
+    assert.deepEqual(remaining.remainingKeys, []);
   }
 
   {
@@ -48,6 +64,20 @@ export const runQualityGateTests = (): void => {
     assert.equal(Number(style.fontSize), 65);
     if (previousScale === undefined) delete process.env.TYPOGRAPHY_SCALE;
     else process.env.TYPOGRAPHY_SCALE = previousScale;
+  }
+
+  {
+    const slideContext = {
+      titleIntent: "Два этапа фотосинтеза",
+      claim: "Оба этапа работают как единая система.",
+      mustInclude: ["Световая фаза запасает энергию.", "Темновая фаза использует эту энергию."],
+      expectedEvidence: ["Связь между АТФ и синтезом глюкозы."],
+    };
+    const step3 = normalizeText("s2_step3", generateLocalFallback({ key: "s2_step3", topic: "Фотосинтез", slideNumber: 2, slideContext }));
+    const step4 = normalizeText("s2_step4", generateLocalFallback({ key: "s2_step4", topic: "Фотосинтез", slideNumber: 2, slideContext }));
+    assert.notEqual(step3, step4);
+    assert.match(step3, /единая система/);
+    assert.match(step4, /АТФ/);
   }
 
   {

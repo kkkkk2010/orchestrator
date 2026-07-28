@@ -467,7 +467,32 @@ export const autoFitText = (params: {
   return { overflowCount, truncatedCount, items };
 };
 
-export const generateLocalFallback = (params: { key: string; topic: string; slideNumber: number }): string => {
+type LocalFallbackSlideContext = {
+  titleIntent?: string;
+  claim?: string;
+  mustInclude?: string[];
+  expectedEvidence?: string[];
+};
+
+const uniqueFallbackCandidates = (values: Array<string | undefined>): string[] => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const cleaned = (value || "").replace(/^[-•]\s*/, "").trim();
+    const identity = cleaned.toLocaleLowerCase("ru-RU");
+    if (!cleaned || seen.has(identity)) continue;
+    seen.add(identity);
+    result.push(cleaned);
+  }
+  return result;
+};
+
+export const generateLocalFallback = (params: {
+  key: string;
+  topic: string;
+  slideNumber: number;
+  slideContext?: LocalFallbackSlideContext;
+}): string => {
   const key = params.key.toLowerCase();
   const topic = params.topic || "Тема презентации";
 
@@ -476,12 +501,25 @@ export const generateLocalFallback = (params: { key: string; topic: string; slid
   }
 
   if (key.includes("title") || key.includes("header")) {
-    return `${topic} — слайд ${params.slideNumber}`;
+    return params.slideContext?.titleIntent || `${topic} — слайд ${params.slideNumber}`;
   }
 
   if (key.includes("bullets") || key.includes("list") || key.includes("points") || key.includes("step") || key.includes("plan") || key.includes("goals") || key.includes("examples")) {
-    return generateLocalFallbackBullets(topic, "general").join("\n");
+    const candidates = uniqueFallbackCandidates([
+      ...(params.slideContext?.mustInclude || []),
+      params.slideContext?.claim,
+      ...(params.slideContext?.expectedEvidence || []),
+      ...generateLocalFallbackBullets(topic, "general"),
+      `Практический пример по теме «${topic}».`,
+      `Связь этого пункта с основной темой слайда ${params.slideNumber}.`,
+    ]);
+    const numberedSlot = key.match(/(?:step|point|item|example|bullet|goal)[_-]?(\d+)(?:_|$)/i);
+    if (numberedSlot?.[1]) {
+      const index = Math.max(0, Number.parseInt(numberedSlot[1], 10) - 1);
+      return candidates[index % candidates.length];
+    }
+    return candidates.slice(0, 4).join("\n");
   }
 
-  return `Краткое пояснение по теме «${topic}» для слайда ${params.slideNumber}.`;
+  return params.slideContext?.claim || `Краткое пояснение по теме «${topic}» для слайда ${params.slideNumber}.`;
 };

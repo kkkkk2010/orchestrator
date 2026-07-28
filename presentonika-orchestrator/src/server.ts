@@ -3,7 +3,8 @@ import Fastify from "fastify";
 import multipart from "@fastify/multipart";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { getQueue, getQueueRedisConnection } from "./queue";
+import crypto from "node:crypto";
+import { closeQueueResources, getQueue, getQueueRedisConnection, getWorkerHeartbeatKey } from "./queue";
 import { createJobSchema } from "./schema";
 import { registerStagedRoutes } from "./staged/stagedRoutes";
 import { startCleanupService } from "./cleanup/cleanupService";
@@ -16,11 +17,23 @@ const stagedDirAbs = path.resolve(process.env.STAGED_DIR || ".staged");
 const ORCHESTRATOR_PUBLIC_KEY = process.env.PRESENTONIKA_ORCHESTRATOR_KEY || process.env.ORCHESTRATOR_PUBLIC_KEY || "";
 const JOBS_RATE_LIMIT_MAX = Number.parseInt(process.env.JOBS_RATE_LIMIT_MAX || "30", 10);
 const JOBS_RATE_LIMIT_WINDOW_SECONDS = Number.parseInt(process.env.JOBS_RATE_LIMIT_WINDOW_SECONDS || "300", 10);
+const REQUIRE_WORKER_READY = process.env.REQUIRE_WORKER_READY !== "false";
+const TRUST_PROXY = process.env.TRUST_PROXY === "true";
 
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL || "info" },
-  trustProxy: true,
+  trustProxy: TRUST_PROXY ? "127.0.0.1" : false,
   bodyLimit: 2 * 1024 * 1024,
+  disableRequestLogging: true,
+});
+
+app.addHook("onResponse", async (request, reply) => {
+  request.log.info({
+    method: request.method,
+    route: request.routeOptions.url,
+    statusCode: reply.statusCode,
+    responseTimeMs: Math.round(reply.elapsedTime),
+  }, "request completed");
 });
 
 const stopCleanupService = startCleanupService({
@@ -49,7 +62,11 @@ const requirePublicKey = (request: { headers: Record<string, unknown>; ip: strin
   const raw = request.headers["x-orchestrator-key"];
   const headerValue = Array.isArray(raw) ? String(raw[0] ?? "") : String(raw ?? "");
 
-  if (!ORCHESTRATOR_PUBLIC_KEY || headerValue !== ORCHESTRATOR_PUBLIC_KEY) {
+  const supplied = Buffer.from(headerValue);
+  const expected = Buffer.from(ORCHESTRATOR_PUBLIC_KEY);
+  const authorized = expected.length > 0 && supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
+
+  if (!authorized) {
     app.log.warn({ ip: request.ip, path: "auth", hasKey: Boolean(headerValue) }, "unauthorized orchestrator api request");
     void reply.status(401).send({ error: "unauthorized" });
     return false;
@@ -82,6 +99,21 @@ app.get("/health", async () => ({
   service: "orchestrator",
   ts: new Date().toISOString(),
 }));
+
+app.get("/ready", async (_request, reply) => {
+  try {
+    const redis = getQueueRedisConnection();
+    await redis.ping();
+    const workerHeartbeat = REQUIRE_WORKER_READY ? await redis.get(getWorkerHeartbeatKey()) : "not-required";
+    if (REQUIRE_WORKER_READY && !workerHeartbeat) {
+      return reply.status(503).send({ ok: false, redis: true, worker: false });
+    }
+    return { ok: true, redis: true, worker: true };
+  } catch (error) {
+    app.log.warn({ err: error }, "readiness check failed");
+    return reply.status(503).send({ ok: false, redis: false, worker: false });
+  }
+});
 
 app.post("/plans", async (request, reply) => {
   if (!requirePublicKey(request, reply)) {
@@ -129,6 +161,9 @@ app.post("/jobs", async (request, reply) => {
   }
 
   const payload = parsed.data;
+  if (process.env.NODE_ENV === "production" && payload.debug && process.env.ALLOW_DEBUG_FILLS !== "true") {
+    return reply.status(400).send({ error: "debug_fills_disabled" });
+  }
   const jobId = `p_${payload.presentationId}_${Date.now()}`;
 
   await getQueue().add("generate", payload, {
@@ -263,6 +298,9 @@ if (mockWpEnabled) {
 
 const start = async (): Promise<void> => {
   try {
+    if (process.env.NODE_ENV === "production" && ORCHESTRATOR_PUBLIC_KEY.length < 32) {
+      app.log.warn("PRESENTONIKA_ORCHESTRATOR_KEY should be rotated to at least 32 characters");
+    }
     await app.listen({ host: "0.0.0.0", port });
   } catch (error) {
     app.log.error(error, "failed to start server");
@@ -272,9 +310,15 @@ const start = async (): Promise<void> => {
 
 void start();
 
-const shutdown = (): void => {
+let shuttingDown = false;
+const shutdown = async (signal: string): Promise<void> => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  app.log.info({ signal }, "shutting down orchestrator api");
   stopCleanupService();
+  await app.close().catch((error) => app.log.error({ err: error }, "api close failed"));
+  await closeQueueResources();
 };
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));

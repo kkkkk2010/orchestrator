@@ -1,11 +1,18 @@
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { Redis } from "ioredis";
 import { getStagedToken } from "./stagedStore";
 
 const isSafeStagedName = (name: string): boolean => {
   return !(name.includes("/") || name.includes("\\") || name.includes("..") || path.basename(name) !== name);
+};
+
+const tokensEqual = (left: string, right: string): boolean => {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
 };
 
 export const registerStagedRoutes = (app: FastifyInstance, opts: { redis: Redis; stagedDirAbs: string }): void => {
@@ -26,7 +33,7 @@ export const registerStagedRoutes = (app: FastifyInstance, opts: { redis: Redis;
       return reply.status(404).send({ error: "not_found" });
     }
 
-    if (expectedToken !== token) {
+    if (!tokensEqual(expectedToken, token)) {
       return reply.status(403).send({ error: "forbidden" });
     }
 

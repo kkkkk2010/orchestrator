@@ -21,6 +21,7 @@ const createConnection = (forWorker: boolean): Redis =>
 const asBullConnection = (redis: Redis): ConnectionOptions => redis as unknown as ConnectionOptions;
 
 export const getQueueName = (): string => queueName;
+export const getWorkerHeartbeatKey = (): string => `worker:${queueName}:heartbeat`;
 
 export const getQueueRedisConnection = (): Redis => {
   if (!queueRedisConnection) {
@@ -60,3 +61,19 @@ export const getQueueEvents = (): QueueEvents => {
 
 
 export const getWorkerBullConnection = (): ConnectionOptions => asBullConnection(getWorkerRedisConnection());
+
+export const closeQueueResources = async (): Promise<void> => {
+  await Promise.allSettled([
+    queue?.close(),
+    queueEvents?.close(),
+  ]);
+  queue = null;
+  queueEvents = null;
+
+  await Promise.allSettled([
+    queueRedisConnection?.quit(),
+    workerRedisConnection?.quit(),
+  ]);
+  queueRedisConnection = null;
+  workerRedisConnection = null;
+};

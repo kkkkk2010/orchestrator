@@ -24,12 +24,14 @@ export const runLayoutsMergeTests = async (): Promise<void> => {
   await makeZip(zip1);
   await makeZip(zip2);
 
-  const merged = await mergeLayoutSlides({
-    slides: [
-      { slide: 1, layoutId: "a", docSlide: { elements: [{ type: "image", src: "assets/images/shared.png" }] }, zipPath: zip1 },
-      { slide: 2, layoutId: "b", docSlide: { elements: [{ type: "image", src: "assets/images/shared.png" }] }, zipPath: zip2 },
-    ],
-  });
+  const layoutSlides = [
+    { slide: 1, layoutId: "a", docSlide: { elements: [{ type: "image", src: "assets/images/shared.png" }] }, zipPath: zip1 },
+    { slide: 2, layoutId: "b", docSlide: { elements: [{ type: "image", src: "assets/images/shared.png" }] }, zipPath: zip2 },
+  ];
+  const previousDebugLabel = process.env.LAYOUT_DEBUG_LABEL;
+  delete process.env.LAYOUT_DEBUG_LABEL;
+
+  const merged = await mergeLayoutSlides({ slides: layoutSlides });
 
   assert.ok(Object.keys(merged.extraEntries).some((name) => name.includes("assets/layouts/a/slide-1/assets/images/shared.png")));
   assert.ok(Object.keys(merged.extraEntries).some((name) => name.includes("assets/layouts/b/slide-2/assets/images/shared.png")));
@@ -38,5 +40,17 @@ export const runLayoutsMergeTests = async (): Promise<void> => {
   assert.equal(slides[0].background?.src, "backgrounds/slide-1.png");
   assert.equal(slides[1].background?.src, "backgrounds/slide-2.png");
   assert.equal(slides[0].elements.some((element) => element.name === "theme_background" || element.src === "backgrounds/slide-1.png"), false);
+  assert.equal(slides[0].elements.some((element) => element.name === "layout_debug_label"), true);
   assert.equal(slides[0].elements[0].src?.includes("assets/layouts/a/slide-1/assets/images/shared.png"), true);
+
+  process.env.LAYOUT_DEBUG_LABEL = "false";
+  const mergedWithoutDebugLabels = await mergeLayoutSlides({ slides: layoutSlides });
+  const slidesWithoutDebugLabels = (mergedWithoutDebugLabels.doc as { slides: Array<{ elements: Array<{ name?: string }> }> }).slides;
+  assert.equal(slidesWithoutDebugLabels[0].elements.some((element) => element.name === "layout_debug_label"), false);
+
+  if (previousDebugLabel === undefined) {
+    delete process.env.LAYOUT_DEBUG_LABEL;
+  } else {
+    process.env.LAYOUT_DEBUG_LABEL = previousDebugLabel;
+  }
 };
