@@ -1,0 +1,44 @@
+{
+  "id": "teacher-bright",
+  "name": "Teacher Bright",
+  "version": 1,
+  "mode": "light",
+  "palette": {
+    "bg1": "#FFF7D6",
+    "bg2": "#FFE4F0",
+    "accent": "#7C3AED"
+  },
+  "background": {
+    "blobs": 3,
+    "grain": 0.04,
+    "gradientStrength": 1.12,
+    "blobAlphaMin": 0.07,
+    "blobAlphaMax": 0.2,
+    "vignette": 0.025,
+    "accentBlobChance": 0.42
+  },
+  "typography": {
+    "fontFamily": "Times New Roman",
+    "sizes": {
+      "title": 56,
+      "subtitle": 34,
+      "body": 26,
+      "small": 18,
+      "muted": 18,
+      "bullets": 25
+    },
+    "lineHeights": {
+      "title": 1.04,
+      "subtitle": 1.1,
+      "body": 1.18,
+      "small": 1.15,
+      "muted": 1.15,
+      "bullets": 1.15
+    },
+    "colors": {
+      "title": "#24123A",
+      "body": "#312E3B",
+      "muted": "#6B5F78"
+    }
+  }
+}

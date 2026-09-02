@@ -1,0 +1,44 @@
+{
+  "id": "teacher-dark",
+  "name": "Teacher Dark",
+  "version": 1,
+  "mode": "dark",
+  "palette": {
+    "bg1": "#070B16",
+    "bg2": "#14285C",
+    "accent": "#65D8FF"
+  },
+  "background": {
+    "blobs": 3,
+    "grain": 0.07,
+    "gradientStrength": 1.3,
+    "blobAlphaMin": 0.1,
+    "blobAlphaMax": 0.26,
+    "vignette": 0.24,
+    "accentBlobChance": 0.5
+  },
+  "typography": {
+    "fontFamily": "Times New Roman",
+    "sizes": {
+      "title": 56,
+      "subtitle": 34,
+      "body": 26,
+      "small": 18,
+      "muted": 18,
+      "bullets": 25
+    },
+    "lineHeights": {
+      "title": 1.04,
+      "subtitle": 1.1,
+      "body": 1.18,
+      "small": 1.15,
+      "muted": 1.15,
+      "bullets": 1.15
+    },
+    "colors": {
+      "title": "#FFFFFF",
+      "body": "#EEF4FF",
+      "muted": "#B8C3D9"
+    }
+  }
+}

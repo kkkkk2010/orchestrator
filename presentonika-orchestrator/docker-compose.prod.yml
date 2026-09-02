@@ -1,0 +1,200 @@
+services:
+  redis:
+    image: redis:7-alpine
+    user: redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - orchestrator_internal
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16777216
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+
+  orchestrator-api:
+    build: .
+    restart: unless-stopped
+    command: ["node", "dist/server.js"]
+    environment:
+      PORT: ${PORT:-8080}
+      REDIS_URL: redis://redis:6379
+      QUEUE_NAME: ${QUEUE_NAME:-presentonika_jobs}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PRESENTONIKA_ORCHESTRATOR_KEY: ${PRESENTONIKA_ORCHESTRATOR_KEY:?PRESENTONIKA_ORCHESTRATOR_KEY is required}
+      TRUST_PROXY: ${TRUST_PROXY:-true}
+      REQUIRE_WORKER_READY: ${REQUIRE_WORKER_READY:-true}
+      ORCHESTRATOR_SAVE_ENDPOINT_ORIGINS: ${ORCHESTRATOR_SAVE_ENDPOINT_ORIGINS:-https://www.presentonika.ru}
+      ENABLE_CLEANUP: ${ENABLE_CLEANUP:-true}
+      ARTIFACT_TTL_SECONDS: ${ARTIFACT_TTL_SECONDS:-86400}
+      CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-600}
+      JOBS_RATE_LIMIT_MAX: ${JOBS_RATE_LIMIT_MAX:-30}
+      JOBS_RATE_LIMIT_WINDOW_SECONDS: ${JOBS_RATE_LIMIT_WINDOW_SECONDS:-300}
+      ENABLE_MOCK_WP: ${ENABLE_MOCK_WP:-false}
+      PLAN_GENERATION_ENABLED: ${PLAN_GENERATION_ENABLED:-true}
+      PLAN_LLM_ENABLED: ${PLAN_LLM_ENABLED:-false}
+      PLAN_MODEL: ${PLAN_MODEL:-deepseek-chat}
+      PLAN_MAX_OUTPUT_TOKENS: ${PLAN_MAX_OUTPUT_TOKENS:-3000}
+      PLAN_TIMEOUT_MS: ${PLAN_TIMEOUT_MS:-30000}
+      PLAN_FAIL_ON_ERROR: ${PLAN_FAIL_ON_ERROR:-false}
+      PLAN_API_KEY: ${PLAN_API_KEY:-}
+      PLAN_BASE_URL: ${PLAN_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      PUBLIC_ZIP_BASE_URL: ${PUBLIC_ZIP_BASE_URL:?PUBLIC_ZIP_BASE_URL is required}
+      THEMES_DIR: /app/themes
+      STAGED_DIR: ${STAGED_DIR:-.staged}
+      STAGED_ENABLE_SERVER: ${STAGED_ENABLE_SERVER:-true}
+      LAYOUT_ENGINE_ENABLED: "true"
+      LAYOUT_ENGINE_DIR: /app/layouts-local
+      LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT: "false"
+      LAYOUT_ENGINE_VARIATION: "true"
+      LAYOUT_DEBUG_LABEL: ${LAYOUT_DEBUG_LABEL:-true}
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./out:/app/out
+      - ./.tmp:/app/.tmp
+      - ./.staged:/app/.staged
+      - ./themes:/app/themes:ro
+      - ./layouts-local:/app/layouts-local:ro
+    networks:
+      - orchestrator_internal
+      - presentonika_shared
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 2g
+    cpus: 2.0
+    stop_grace_period: 30s
+
+  orchestrator-worker:
+    build: .
+    restart: unless-stopped
+    command: ["node", "dist/worker.js"]
+    environment:
+      REDIS_URL: redis://redis:6379
+      QUEUE_NAME: ${QUEUE_NAME:-presentonika_jobs}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      PUBLIC_ZIP_BASE_URL: ${PUBLIC_ZIP_BASE_URL:?PUBLIC_ZIP_BASE_URL is required}
+      THEMES_DIR: /app/themes
+      STAGED_DIR: ${STAGED_DIR:-.staged}
+      STAGED_ENABLE_SERVER: ${STAGED_ENABLE_SERVER:-true}
+      STAGED_CLEANUP_ON_SUCCESS: ${STAGED_CLEANUP_ON_SUCCESS:-true}
+      STAGED_CLEANUP_DELAY_SECONDS: ${STAGED_CLEANUP_DELAY_SECONDS:-0}
+      MAX_TEMPLATE_ZIP_BYTES: ${MAX_TEMPLATE_ZIP_BYTES:-200000000}
+      MAX_OUTZIP_BYTES_LOCAL: ${MAX_OUTZIP_BYTES_LOCAL:-250000000}
+      WP_UPLOAD_ENABLED: ${WP_UPLOAD_ENABLED:-true}
+      WP_FAIL_ON_UPLOAD_ERROR: ${WP_FAIL_ON_UPLOAD_ERROR:-true}
+      WP_SAVE_MODE: ${WP_SAVE_MODE:-from_url}
+      WP_SAVE_FROM_URL_TIMEOUT_MS: ${WP_SAVE_FROM_URL_TIMEOUT_MS:-30000}
+      WP_SAVE_RETRIES: ${WP_SAVE_RETRIES:-10}
+      WP_SAVE_RETRY_BASE_DELAY_MS: ${WP_SAVE_RETRY_BASE_DELAY_MS:-400}
+      WP_SAVE_WAIT_TIMEOUT_MS: ${WP_SAVE_WAIT_TIMEOUT_MS:-5000}
+      WP_UPLOAD_TIMEOUT_MS: ${WP_UPLOAD_TIMEOUT_MS:-20000}
+      LLM_ENABLED: ${LLM_ENABLED:-false}
+      LLM_FAIL_ON_ERROR: ${LLM_FAIL_ON_ERROR:-false}
+      LLM_TIMEOUT_MS: ${LLM_TIMEOUT_MS:-300000}
+      LLM_TOTAL_TIMEOUT_MS: ${LLM_TOTAL_TIMEOUT_MS:-600000}
+      LLM_MAX_KEYS_PER_REQUEST: ${LLM_MAX_KEYS_PER_REQUEST:-12}
+      LLM_BATCH_MODE: ${LLM_BATCH_MODE:-bySlide}
+      LLM_RETRIES: ${LLM_RETRIES:-2}
+      LLM_RETRY_BASE_DELAY_MS: ${LLM_RETRY_BASE_DELAY_MS:-400}
+      LLM_RETRY_MAX_DELAY_MS: ${LLM_RETRY_MAX_DELAY_MS:-5000}
+      LLM_RETRY_ON_ABORT: ${LLM_RETRY_ON_ABORT:-true}
+      LLM_JSON_REPAIR_RETRIES: ${LLM_JSON_REPAIR_RETRIES:-2}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.6}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-1800}
+      LLM_MAX_OUTPUT_CHARS: ${LLM_MAX_OUTPUT_CHARS:-50000}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      RAG_ENABLED: ${RAG_ENABLED:-false}
+      RAG_FAIL_ON_ERROR: ${RAG_FAIL_ON_ERROR:-false}
+      RAG_BASE_URL: ${RAG_BASE_URL:-}
+      RAG_API_KEY: ${RAG_API_KEY:-}
+      RAG_COLLECTION: ${RAG_COLLECTION:-default}
+      RAG_MODE: ${RAG_MODE:-retrieve}
+      RAG_TOP_K: ${RAG_TOP_K:-10}
+      RAG_MIN_SCORE: ${RAG_MIN_SCORE:-0.45}
+      RAG_MAX_CONTEXT_CHARS: ${RAG_MAX_CONTEXT_CHARS:-12000}
+      RAG_MAX_HITS: ${RAG_MAX_HITS:-12}
+      RAG_TIMEOUT_MS: ${RAG_TIMEOUT_MS:-10000}
+      RAG_MAX_RETRIES: ${RAG_MAX_RETRIES:-2}
+      RAG_RETRY_BASE_DELAY_MS: ${RAG_RETRY_BASE_DELAY_MS:-300}
+      RAG_INCLUDE_IN_OUTZIP: ${RAG_INCLUDE_IN_OUTZIP:-true}
+      RAG_DEFAULT_SOURCE_URIS: ${RAG_DEFAULT_SOURCE_URIS:-}
+      IMAGEPLAN_AUTO_DETECT: ${IMAGEPLAN_AUTO_DETECT:-true}
+      IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR: ${IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR:-true}
+      BACKGROUND_GEN_TIMEOUT_MS: ${BACKGROUND_GEN_TIMEOUT_MS:-20000}
+      FONT_FAMILY_DEFAULT: Times New Roman
+      TYPOGRAPHY_SCALE: "1"
+      TYPOGRAPHY_USE_THEME_SIZES: "true"
+      TEXT_FIT_TRUNCATE: "false"
+      FAIL_ON_REMAINING_TOKENS: ${FAIL_ON_REMAINING_TOKENS:-true}
+      LAYOUT_ENGINE_ENABLED: "true"
+      LAYOUT_ENGINE_DIR: /app/layouts-local
+      LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT: "false"
+      LAYOUT_ENGINE_VARIATION: "true"
+      LAYOUT_DEBUG_LABEL: ${LAYOUT_DEBUG_LABEL:-true}
+      WORKER_HEARTBEAT_INTERVAL_MS: ${WORKER_HEARTBEAT_INTERVAL_MS:-10000}
+      WORKER_HEARTBEAT_TTL_SECONDS: ${WORKER_HEARTBEAT_TTL_SECONDS:-30}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./out:/app/out
+      - ./.tmp:/app/.tmp
+      - ./.staged:/app/.staged
+      - ./themes:/app/themes:ro
+      - ./layouts-local:/app/layouts-local:ro
+    networks:
+      - orchestrator_internal
+      - presentonika_shared
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: 4g
+    cpus: 4.0
+    stop_grace_period: 2m
+
+volumes:
+  redis_data:
+
+networks:
+  orchestrator_internal:
+    internal: true
+  presentonika_shared:
+    external: true

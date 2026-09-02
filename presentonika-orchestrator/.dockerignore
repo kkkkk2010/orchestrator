@@ -1,0 +1,14 @@
+node_modules
+dist
+out
+.tmp
+.staged
+layouts-local
+.git
+.gitignore
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+.env
+.env.*
