@@ -7,6 +7,7 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 COPY themes ./themes
+COPY assets ./assets
 COPY README.md ./README.md
 COPY docs ./docs
 
@@ -26,6 +27,7 @@ RUN addgroup --system --gid 1001 presentonika \
 
 COPY --from=build --chown=presentonika:presentonika /app/dist ./dist
 COPY --chown=presentonika:presentonika themes ./themes
+COPY --chown=presentonika:presentonika assets ./assets
 
 USER presentonika
 EXPOSE 8080

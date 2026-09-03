@@ -1,4 +1,26 @@
 services:
+  loki:
+    image: grafana/loki:3.7.0
+    command: ["-config.file=/etc/loki/local-config.yml"]
+    expose:
+      - "3100"
+    volumes:
+      - ./ops/loki-config.yml:/etc/loki/local-config.yml:ro
+      - loki_data:/loki
+    healthcheck:
+      test: ["CMD", "/usr/bin/wget", "-qO-", "http://127.0.0.1:3100/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -19,6 +41,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      loki:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -26,6 +50,8 @@ services:
       REDIS_URL: redis://redis:6379
       QUEUE_NAME: ${QUEUE_NAME:-presentonika_jobs}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOKI_PUSH_URL: http://loki:3100/loki/api/v1/push
+      QUEUE_AGE_ALERT_MS: ${QUEUE_AGE_ALERT_MS:-300000}
       PRESENTONIKA_ORCHESTRATOR_KEY: ${PRESENTONIKA_ORCHESTRATOR_KEY:?PRESENTONIKA_ORCHESTRATOR_KEY is required}
       TRUST_PROXY: ${TRUST_PROXY:-true}
       REQUIRE_WORKER_READY: ${REQUIRE_WORKER_READY:-true}
@@ -81,11 +107,17 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      loki:
+        condition: service_healthy
     environment:
       REDIS_URL: redis://redis:6379
       QUEUE_NAME: ${QUEUE_NAME:-presentonika_jobs}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOKI_PUSH_URL: http://loki:3100/loki/api/v1/push
+      QUEUE_AGE_ALERT_MS: ${QUEUE_AGE_ALERT_MS:-300000}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      USER_CONCURRENCY_MAX: ${USER_CONCURRENCY_MAX:-1}
+      USER_SLOT_TTL_SECONDS: ${USER_SLOT_TTL_SECONDS:-7200}
       PUBLIC_ZIP_BASE_URL: ${PUBLIC_ZIP_BASE_URL:?PUBLIC_ZIP_BASE_URL is required}
       STAGED_DIR: .staged
       STAGED_ENABLE_SERVER: ${STAGED_ENABLE_SERVER:-true}
@@ -131,3 +163,4 @@ services:
 
 volumes:
   redis_data:
+  loki_data:

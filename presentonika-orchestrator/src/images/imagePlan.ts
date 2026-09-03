@@ -104,6 +104,41 @@ const readNum = (value: unknown): number | null => (typeof value === "number" &&
 
 const trim = (value: string, max: number): string => (value.length > max ? value.slice(0, max) : value);
 
+const isRussianLanguage = (language: string | null | undefined): boolean =>
+  (language || "").trim().toLowerCase().split(/[-_]/)[0] === "ru";
+
+export const isImagePromptLanguageCompatible = (query: string, language: string | null | undefined): boolean => {
+  if (!isRussianLanguage(language)) return true;
+  return /[А-Яа-яЁё]/.test(query) && !/[A-Za-z]/.test(query);
+};
+
+const sanitizeRussianQuery = (value: string): string => value
+  .replace(/[^А-Яа-яЁё0-9\s-]/g, " ")
+  .split(/\s+/)
+  .filter((word) => word.length > 1 && !/[A-Za-z]/.test(word))
+  .join(" ")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const FALLBACK_STOP_WORDS = new Set([
+  "презентация", "слайд", "тема", "урок", "проверка", "знаний", "вопрос", "вопросы", "ответ", "ответы",
+  "главное", "итог", "итоги", "вывод", "выводы", "тип", "общий", "общая", "фото",
+  "и", "в", "на", "по", "для", "что", "это", "как", "при", "или", "из", "про", "его", "ее", "их",
+]);
+
+const fallbackWords = (value: string, limit: number): string[] => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const word of sanitizeRussianQuery(value).split(/\s+/).filter(Boolean)) {
+    const normalized = word.toLowerCase();
+    if (word.length < 3 || FALLBACK_STOP_WORDS.has(normalized) || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(word);
+    if (out.length >= limit) break;
+  }
+  return out;
+};
+
 const resolveAspect = (params: { width: number | null; height: number | null }): ImagePlanSlot["aspect"] => {
   const width = params.width ?? 0;
   const height = params.height ?? 0;
@@ -438,14 +473,42 @@ export const remapImageTargetsToDoc = (params: { targets: ImageSlotTarget[]; doc
 };
 
 
-export const buildImagePromptFallback = (params: { topic: string; slideTitle: string; slideSummary: string; kind: ImagePlanSlot["kind"] }): { query: string; hint: string; negative: string[]; styleHint: string } => {
-  const titleWords = params.slideTitle.split(/\s+/).filter(Boolean).slice(0, 10).join(" ");
-  const summaryWords = params.slideSummary.split(/\s+/).filter(Boolean).slice(0, 3).join(" ");
-  const query = [params.topic, titleWords, summaryWords, "фото"].filter((item) => item.length > 0).join(" ").replace(/\s+/g, " ").trim();
+export const buildImagePromptFallback = (params: { topic: string; slideTitle: string; slideSummary: string; kind: ImagePlanSlot["kind"]; language?: string | null }): { query: string; hint: string; negative: string[]; styleHint: string } => {
+  const context = `${params.slideTitle} ${params.slideSummary}`.replace(/\s+/g, " ").trim();
+  const topicWords = fallbackWords(params.topic, 4);
+  const detailWords = fallbackWords(context, 5).filter((word) => !topicWords.some((topicWord) => topicWord.toLowerCase() === word.toLowerCase()));
+  const roleContext = `${context} ${params.slideTitle}`.toLowerCase();
+  const isQuiz = /проверка знаний|задани|тест|викторин|quiz|student|pupil|question/.test(roleContext);
+  const isScientific = /клет|митохондр|дыхани|атф|днк|биолог|молекул|атом|фотосинтез|организм|энерги/.test(`${params.topic} ${context}`.toLowerCase());
+  const isChronology = /хронолог|таймлайн|этап|период|год|век/.test(roleContext);
+
+  let queryParts: string[];
+  let hint: string;
+  if (isQuiz) {
+    const subject = isScientific ? "биология" : /истори|век|войн|импери/.test(`${params.topic} ${context}`.toLowerCase()) ? "история" : /литератур|поэт|писател|роман/.test(`${params.topic} ${context}`.toLowerCase()) ? "литература" : "школа";
+    queryParts = ["ученик", "решает", "тест", ...topicWords, subject, "класс"];
+    hint = `Ученик выполняет учебное задание по теме ${topicWords.join(" ") || "презентации"} в классе.`;
+  } else if (params.kind === "icon") {
+    queryParts = [...topicWords, ...detailWords.slice(0, 3), "векторная", "иконка"];
+    hint = `Лаконичная иконка по теме ${topicWords.join(" ") || "слайда"} без надписей.`;
+  } else if (isScientific) {
+    queryParts = [...topicWords, ...detailWords.slice(0, 4), "научная", "иллюстрация"];
+    hint = `Наглядная научная иллюстрация по теме ${topicWords.join(" ") || "слайда"} без лишних подписей.`;
+  } else if (isChronology) {
+    queryParts = [...topicWords, ...detailWords.slice(0, 4), "архивная", "фотография"];
+    hint = `Документальный исторический сюжет по теме ${topicWords.join(" ") || "слайда"}.`;
+  } else {
+    queryParts = [...topicWords, ...detailWords.slice(0, 4), params.kind === "photo" ? "документальная" : "тематическая", params.kind === "photo" ? "фотография" : "иллюстрация"];
+    hint = `Конкретный визуальный сюжет по теме ${topicWords.join(" ") || "слайда"}, связанный с содержанием слайда.`;
+  }
+
+  const rawQuery = [...new Map(queryParts.filter(Boolean).map((word) => [word.toLowerCase(), word])).values()].join(" ");
+  const localizedQuery = isRussianLanguage(params.language) ? sanitizeRussianQuery(rawQuery) : rawQuery;
+  const query = fallbackWords(localizedQuery, 11).join(" ") || "тематическая научная иллюстрация";
   return {
     query: trim(query, 180),
-    hint: `Искать ${params.kind} по теме слайда; исключить watermark/lowres`,
-    negative: ["watermark", "nsfw", "lowres", "logo", "text"],
+    hint: trim(hint, 180),
+    negative: ["watermark", "nsfw", "lowres", "logo", "text", "clipart", "мем", "скриншот", "презентация", "реферат"],
     styleHint: styleFromKind(params.kind),
   };
 };

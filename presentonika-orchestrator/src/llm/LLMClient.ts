@@ -11,7 +11,7 @@ export type LLMGenerateInput = {
   fillKeys: string[];
   imagePlan: ImagePlanV1;
   chosenVariantsPreview?: Record<string, string>;
-  mode?: "fills" | "targeted_fills" | "image_prompts";
+  mode?: "fills" | "targeted_fills" | "content_repair" | "image_prompts";
   strictKeysRequired?: boolean;
   deckPlan?: DeckPlan;
   narrativePlan?: NarrativePlanContext;
@@ -22,6 +22,15 @@ export type LLMGenerateInput = {
     role: string;
     textDensity: "low" | "medium" | "high";
   }>;
+  repairContext?: {
+    currentFills: Record<string, string>;
+    issues: Array<{
+      code: string;
+      key?: string;
+      slide?: number;
+      message: string;
+    }>;
+  };
   imagePromptsInput?: Array<{
     slotId: string;
     slide: number;

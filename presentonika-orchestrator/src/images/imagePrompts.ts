@@ -1,6 +1,26 @@
 import type { ImagePlanSlot } from "./imagePlan";
 
-const STOP_WORDS = new Set(["и", "в", "на", "по", "для", "что", "это", "как", "при", "или", "а", "с", "к", "из", "о", "the", "of", "to", "for", "with", "путь", "эпоха", "история", "слайд"]);
+const STOP_WORDS = new Set([
+  "и", "в", "на", "по", "для", "что", "это", "как", "при", "или", "а", "с", "к", "из", "о",
+  "the", "of", "to", "for", "with",
+]);
+
+const GENERIC_SLIDE_WORDS = new Set([
+  "презентация", "слайд", "тема", "урок", "знания", "проверка", "вопрос", "вопросы", "ответ", "ответы",
+  "главное", "итог", "итоги", "вывод", "выводы", "понятие", "понятия", "материал", "информация",
+]);
+
+const ABSTRACT_WORDS = new Set([
+  "важность", "значение", "развитие", "успех", "будущее", "влияние", "актуальность", "современный",
+  "современная", "современное", "основной", "основная", "ключевой", "ключевая", "роль", "идея", "идеи",
+]);
+
+const ABSTRACT_WORD_STEMS = [
+  "важност", "значени", "развити", "успех", "будущ", "влияни", "актуальност", "современн",
+  "основн", "ключев", "рол", "иде", "обществ",
+];
+
+const VISUAL_MEDIUM_PATTERN = /(?:^|\s)(фото(?:графия)?|портрет|микрофотография|схема|диаграмма|инфографика|иллюстрация|рисунок|карта|таймлайн)(?:$|\s)/i;
 
 const extractSlideFromKey = (key: string): number => {
   const match = key.match(/s(\d+)_/i);
@@ -9,9 +29,12 @@ const extractSlideFromKey = (key: string): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 };
 
-const pickSlideType = (keys: string[]): string => {
-  const joined = keys.join(" ").toLowerCase();
+const pickSlideType = (items: Array<{ key: string; value: string }>): string => {
+  const joined = items.map((item) => `${item.key} ${item.value}`).join(" ").toLowerCase();
   if (joined.includes("step") || joined.includes("timeline") || joined.includes("chron")) return "chronology";
+  if (/сравнен|comparison|left_|right_/.test(joined)) return "comparison";
+  if (/этап|процесс|цикл|последовательност/.test(joined)) return "process";
+  if (/проверка знаний|задани|тест|quiz|question|_q\d+/.test(joined)) return "task";
   if (joined.includes("example")) return "examples";
   if (joined.includes("fact") || joined.includes("keywords")) return "facts";
   if (joined.includes("definition")) return "definition";
@@ -29,7 +52,7 @@ const wordsFromText = (text: string): string[] => text
 const keywordsFromText = (text: string): string[] => {
   const words = wordsFromText(text)
     .map((w) => w.toLowerCase())
-    .filter((word) => word.length > 3 && !STOP_WORDS.has(word));
+    .filter((word) => word.length > 2 && !STOP_WORDS.has(word) && !GENERIC_SLIDE_WORDS.has(word));
 
   const freq = new Map<string, number>();
   words.forEach((w) => freq.set(w, (freq.get(w) || 0) + 1));
@@ -75,7 +98,7 @@ export const buildSlideSummaries = (fills: Record<string, string>, slideCount: n
   for (let slide = 1; slide <= slideCount; slide += 1) {
     const items = bySlide.get(slide) || [];
     const title = items.find((item) => item.key.includes("_title"))?.value || "";
-    const slideType = pickSlideType(items.map((item) => item.key));
+    const slideType = pickSlideType(items);
     const textBlob = items.map((item) => item.value).join(" ");
     const keywords = keywordsFromText(`${title} ${textBlob}`).slice(0, 6);
     const summaryRaw = `${title}. ${keywords.join(", ")}. Тип: ${slideType}`.replace(/\s+/g, " ").trim();
@@ -96,12 +119,13 @@ const normalizeQuery = (query: string): string => query
   .trim();
 
 const slideTypeNoun = (slideType: string): string => {
-  if (slideType === "chronology") return "таймлайн";
-  if (slideType === "examples") return "иллюстрация";
-  if (slideType === "facts") return "архивное фото";
-  if (slideType === "definition") return "схема";
-  if (slideType === "task") return "инфографика";
-  return "карта";
+  if (slideType === "chronology") return "архивная фотография";
+  if (slideType === "examples" || slideType === "facts") return "документальная фотография";
+  if (slideType === "definition") return "научная схема";
+  if (slideType === "comparison") return "схема сравнения";
+  if (slideType === "process") return "схема процесса";
+  if (slideType === "summary") return "научная иллюстрация";
+  return "";
 };
 
 const dedupeTokens = (text: string): string[] => {
@@ -116,14 +140,15 @@ const dedupeTokens = (text: string): string[] => {
   return out;
 };
 
-export const compressQuery = (query: string, topicWords: string[]): { query: string; compressionApplied: boolean } => {
-  const topicSet = new Set(topicWords.map((word) => word.toLowerCase()));
+export const compressQuery = (query: string, _topicWords: string[]): { query: string; compressionApplied: boolean } => {
   const tokens = dedupeTokens(query)
     .filter((token) => !STOP_WORDS.has(token.toLowerCase()))
-    .filter((token) => !topicSet.has(token.toLowerCase()) || token.length > 6);
+    .filter((token) => !GENERIC_SLIDE_WORDS.has(token.toLowerCase()));
 
-  const strong = tokens.filter((token) => token.length > 4 || /\d/.test(token));
+  const strong = tokens.filter((token) => token.length > 2 || /\d/.test(token) || token === token.toUpperCase());
   let chosen = strong.length > 0 ? strong : tokens;
+
+  if (chosen.length > 12) chosen = chosen.slice(0, 12);
 
   while (chosen.join(" ").length > 90 && chosen.length > 3) {
     chosen = chosen.slice(0, chosen.length - 1);
@@ -131,6 +156,18 @@ export const compressQuery = (query: string, topicWords: string[]): { query: str
 
   const out = chosen.join(" ").replace(/\s+/g, " ").trim();
   return { query: out.length > 0 ? out : query.slice(0, 90).trim(), compressionApplied: out !== query };
+};
+
+export const isGenericImageQuery = (query: string): boolean => {
+  const meaningful = wordsFromText(query)
+    .map((word) => word.toLowerCase())
+    .filter((word) => !STOP_WORDS.has(word))
+    .filter((word) => !GENERIC_SLIDE_WORDS.has(word))
+    .filter((word) => !["фото", "фотография", "иллюстрация", "схема", "инфографика"].includes(word));
+  const concrete = meaningful.filter(
+    (word) => !ABSTRACT_WORDS.has(word) && !ABSTRACT_WORD_STEMS.some((stem) => word.startsWith(stem)),
+  );
+  return meaningful.length < 3 || concrete.length < 2;
 };
 
 const hasConcreteSignal = (query: string, keywords: string[], entities: string[]): boolean => {
@@ -176,7 +213,8 @@ export const enforceImagePromptUniqueness = (
     if (used.has(norm) || !hasConcreteSignal(nextQuery, keywords, entities)) {
       const uniqueEntity = entities.find((entity) => !norm.includes(entity.toLowerCase()))
         || keywords.find((keyword) => !norm.includes(keyword.toLowerCase()))
-        || roleNoun;
+        || roleNoun
+        || `сюжет ${slot.slide}`;
       nextQuery = `${nextQuery} ${uniqueEntity} ${roleNoun}`.trim();
       const compressedAgain = compressQuery(nextQuery, topicWords);
       nextQuery = compressedAgain.query;
@@ -203,9 +241,13 @@ export const enforceImagePromptUniqueness = (
   return { duplicatesBefore, duplicatesAfter, badGenericCount, compressionAppliedCount };
 };
 
-export const applySlideTypeHeuristics = (query: string, slideType: string): string => {
+export const applySlideTypeHeuristics = (query: string, slideType: string, kind?: ImagePlanSlot["kind"]): string => {
+  if (VISUAL_MEDIUM_PATTERN.test(query)) return query;
   const suffix = slideTypeNoun(slideType);
+  const kindSuffix = kind === "icon" ? "векторная иконка" : kind === "photo" ? "фотография" : kind === "hero" ? "иллюстрация" : "";
+  const effectiveSuffix = suffix || kindSuffix;
+  if (!effectiveSuffix) return query;
   const normalized = normalizeQuery(query);
-  if (normalized.includes(suffix.toLowerCase())) return query;
-  return `${query} ${suffix}`.trim();
+  if (normalized.includes(effectiveSuffix.toLowerCase())) return query;
+  return `${query} ${effectiveSuffix}`.trim();
 };

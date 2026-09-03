@@ -5,15 +5,16 @@ import { createHash } from "node:crypto";
 import { Worker } from "bullmq";
 import { closeQueueResources, getQueueName, getQueueRedisConnection, getWorkerBullConnection, getWorkerHeartbeatKey } from "./queue";
 import { logger } from "./logger";
+import { recordOperationalEvent } from "./observability";
 import { assertThemeTemplateExists, getThemeDir, readThemeMap, readThemeSafe } from "./themes/themeStore";
 import { readDocJsonFromTemplateZip } from "./themes/templateZip";
 import { extractImageSlots, extractPlaceholderLocations, inferSlideCount, normalizePlaceholders } from "./themes/parseDoc";
 import { applyVariants } from "./templates/applyVariants";
-import { applyFillsByLocations, extractRemainingKeys, scanRemainingFillTokens } from "./templates/applyFills";
+import { applyFillsByLocations, extractRemainingKeys, scanRemainingFillTokens, setAtPath } from "./templates/applyFills";
 import { assembleZip } from "./templates/assembleZip";
 import { planImageReplacements } from "./images/planImageReplacements";
-import { buildImagePlanFromMap, buildImagePlanWithDiagnostics, buildImagePromptFallback } from "./images/imagePlan";
-import { applySlideTypeHeuristics, buildSlideSummaries, enforceImagePromptUniqueness } from "./images/imagePrompts";
+import { buildImagePlanFromMap, buildImagePlanWithDiagnostics, buildImagePromptFallback, isImagePromptLanguageCompatible } from "./images/imagePlan";
+import { applySlideTypeHeuristics, buildSlideSummaries, enforceImagePromptUniqueness, isGenericImageQuery } from "./images/imagePrompts";
 import { generateBackgrounds } from "./backgrounds/generateBackgrounds";
 import { normalizeBackgroundTheme } from "./backgrounds/theme";
 import { uploadOutzip } from "./wp/uploadOutzip";
@@ -30,14 +31,23 @@ import { buildSystemPrompt, buildUserPrompt } from "./llm/prompt";
 import { mergeFills } from "./llm/mergeFills";
 import { aggregateFillCounts, buildBatches } from "./llm/batching";
 import { calcLlmRetryDelayMs, isRetryableLlmError } from "./llm/retry";
-import { applyTypographyStandards, autoFitText, dedupeBulletLines, generateLocalFallback, generateLocalFallbackBullets, isBulletLikeFillKey, normalizeBulletLineFormatting, normalizeText, resolveThemeTypography, styleRoleByKey } from "./templates/textPostprocess";
+import { applyTypographyStandards, autoFitText, dedupeBulletLines, generateLocalFallback, generateLocalFallbackBullets, isBulletLikeFillKey, normalizeBulletLineFormatting, normalizeDocumentBulletMarkers, normalizeText, resolveThemeTypography, styleRoleByKey } from "./templates/textPostprocess";
+import { applyLayoutThemeStyles } from "./templates/layoutTheme";
 import { compileLayoutPresentation } from "./layouts";
+import { adaptLayoutToContent } from "./layouts/contentAware";
+import { inferContentDensityFromFills } from "./layouts/dynamicPlan";
 import type { LayoutEngineDiagnostics } from "./layouts/types";
 import { runContentQa } from "./content/contentQa";
+import { buildContentRepairPlan } from "./content/contentRepair";
+import { buildItemizedRepairKeys, composeExactBulletBlock, splitContentItems } from "./content/exactCountRepair";
 import { buildDeterministicDeckPlan } from "./deckPlan";
 import type { DeckPlanSlide } from "./deckPlan/schema";
+import { acquireUserSlot, releaseUserSlot } from "./concurrency/userSlots";
 
 const concurrency = parseInt(process.env.WORKER_CONCURRENCY || "2", 10);
+const USER_CONCURRENCY_MAX = Math.max(1, parseInt(process.env.USER_CONCURRENCY_MAX || "1", 10));
+const USER_SLOT_TTL_SECONDS = Math.max(300, parseInt(process.env.USER_SLOT_TTL_SECONDS || "7200", 10));
+
 const IMAGE_MISSING_LIMIT = 50;
 const BACKGROUND_MISSING_LIMIT = 50;
 const UPLOAD_TEXT_LIMIT = 500;
@@ -82,6 +92,9 @@ const LLM_RETRY_BASE_DELAY_MS = Number.parseInt(process.env.LLM_RETRY_BASE_DELAY
 const LLM_RETRY_MAX_DELAY_MS = Number.parseInt(process.env.LLM_RETRY_MAX_DELAY_MS || "5000", 10);
 const LLM_RETRY_ON_ABORT = process.env.LLM_RETRY_ON_ABORT !== "false";
 const FAIL_ON_REMAINING_TOKENS = process.env.FAIL_ON_REMAINING_TOKENS === "true";
+const CONTENT_REPAIR_ENABLED = process.env.CONTENT_REPAIR_ENABLED !== "false";
+const CONTENT_REPAIR_SCORE_THRESHOLD = Number.parseInt(process.env.CONTENT_REPAIR_SCORE_THRESHOLD || "95", 10);
+const CONTENT_REPAIR_MAX_KEYS = Number.parseInt(process.env.CONTENT_REPAIR_MAX_KEYS || "8", 10);
 
 const slideRole = (slideType: string): string => {
   switch (slideType) {
@@ -255,6 +268,8 @@ const worker = new Worker(
   async (job) => {
     const themeId = typeof job.data?.themeId === "string" ? job.data.themeId : "";
     const presentationId = typeof job.data?.presentationId === "number" ? job.data.presentationId : 0;
+    const userId = typeof job.data?.userId === "number" ? job.data.userId : 0;
+    const requestId = typeof job.data?.requestId === "string" ? job.data.requestId : undefined;
     const jobId = typeof job.id === "string" ? job.id : String(job.id);
     const jobLogger = logger.child({ jobId: job.id, themeId });
 
@@ -264,8 +279,24 @@ const worker = new Worker(
     const jobLockPath = path.resolve(jobTmpDir, ".lock");
     await fs.mkdir(jobTmpDir, { recursive: true });
     await fs.writeFile(jobLockPath, JSON.stringify({ startedAt: new Date().toISOString(), jobId }));
-
+    let userSlotAcquired = false;
     try {
+      userSlotAcquired = await acquireUserSlot(getQueueRedisConnection(), userId, jobId, {
+        limit: USER_CONCURRENCY_MAX,
+        ttlSeconds: USER_SLOT_TTL_SECONDS,
+        onWait: () => jobLogger.info(
+          { userId, userConcurrencyMax: USER_CONCURRENCY_MAX },
+          "job waiting for per-user slot",
+        ),
+      });
+      await recordOperationalEvent(getQueueRedisConnection(), {
+        service: "orchestrator",
+        event: "generation.started",
+        level: "info",
+        requestId,
+        presentationId,
+        queueAgeMs: Math.max(0, Date.now() - job.timestamp),
+      }).catch((error) => jobLogger.warn({ err: error }, "start metric write failed"));
       const { mark, timingsMs } = createStageTimer();
 
     await job.updateProgress(10);
@@ -457,6 +488,7 @@ const worker = new Worker(
       compiledSlideTypes: [],
       fallbackSlideTypeMappings: [],
       fallbackSlotInferences: [],
+      repeatGroupAdaptations: [],
       unsupportedSlideTypes: [] as string[],
       dynamicBindings: [] as Array<{ slide: number; slotName: string; fillKey: string }>,
       missingSlotBindings: [] as string[],
@@ -514,14 +546,14 @@ const worker = new Worker(
     const debugFillsApplied = Object.keys(debugFills).length > 0;
 
     const variantSeedFills = { ...mergeFills(initialFillKeys, {}, "TEST_"), ...debugFills };
-    const variantsStats = applyVariants(doc, map, { presentationId }, variantSeedFills, {
+    let variantsStats = applyVariants(doc, map, { presentationId }, variantSeedFills, {
       onDropAtOutOfRange: ({ slideIndex, badIndex }) => {
         jobLogger.warn({ slideIndex, badIndex }, "dropAt index out of range");
       },
     });
 
     const normalizedAfterVariants = normalizePlaceholders(doc);
-    const placeholderScan = extractPlaceholderLocations(doc);
+    let placeholderScan = extractPlaceholderLocations(doc);
     const fillKeys = [...new Set(placeholderScan.locations.map((item) => item.key))];
     const selectedLayoutBySlide = new Map(layoutEngineDiagnostics.selectedLayouts.map((row) => [row.slide, row]));
     const deckPlanRoute = deckPlan.slides.map((slide: {
@@ -540,7 +572,7 @@ const worker = new Worker(
         claim: slide.claim,
         titleIntent: slide.titleIntent,
         selectedLayoutId: selectedLayout?.layoutId || null,
-        resolvedLayoutSlideType: selectedLayout?.slideType || null,
+        resolvedLayoutSlideType: selectedLayout?.resolvedSlideType || null,
         fillKeys: fillKeys.filter((key) => key.startsWith(`s${slide.slide}_`)),
         requiredItems: slide.requiredItems,
       };
@@ -799,6 +831,7 @@ const worker = new Worker(
     const fills = { ...generatedFills, ...debugFills };
     const formatNormalizations = {
       count: 0,
+      documentTextCount: 0,
       examples: [] as Array<{ key: string; before: string; after: string; rules: string[] }>,
     };
     const applySafeFormatNormalizations = (keys: string[]): void => {
@@ -865,7 +898,7 @@ const worker = new Worker(
     llmDiagnostics.missingKeysCount = aggregated.missingKeysCount;
     llmDiagnostics.usedFallbackForAll = fillKeys.length > 0 && fallbackKeysCount === fillKeys.length;
 
-    const fillsStats = applyFillsByLocations(doc, placeholderScan.locations, fills);
+    let fillsStats = applyFillsByLocations(doc, placeholderScan.locations, fills);
     let remainingFillTokenStats = scanRemainingFillTokens(doc);
     let remainingKeys = extractRemainingKeys(remainingFillTokenStats.remainingSamples);
 
@@ -955,7 +988,7 @@ const worker = new Worker(
       }
     }
 
-    const contentQuality = runContentQa({
+    let contentQuality = runContentQa({
       fills,
       fillKeys,
       topic,
@@ -970,18 +1003,552 @@ const worker = new Worker(
       "content qa completed"
     );
 
+    const contentRepair = {
+      enabled: CONTENT_REPAIR_ENABLED,
+      attempted: false,
+      accepted: false,
+      acceptedPasses: 0,
+      beforeScore: contentQuality.score,
+      afterScore: contentQuality.score,
+      requestedKeys: [] as string[],
+      receivedKeys: [] as string[],
+      issueCodes: [] as string[],
+      passes: [] as Array<{
+        attempt: number;
+        beforeScore: number;
+        afterScore: number;
+        requestedKeys: string[];
+        receivedKeys: string[];
+        accepted: boolean;
+        error?: string;
+      }>,
+      error: undefined as string | undefined,
+    };
+
+    if (CONTENT_REPAIR_ENABLED && LLM_ENABLED) {
+      for (let attempt = 1; attempt <= 2 && contentQuality.score < CONTENT_REPAIR_SCORE_THRESHOLD; attempt += 1) {
+        const repairPlan = buildContentRepairPlan({
+          report: contentQuality,
+          fillKeys,
+          maxKeys: Math.max(1, CONTENT_REPAIR_MAX_KEYS),
+        });
+        if (repairPlan.keys.length === 0) break;
+
+        contentRepair.attempted = true;
+        contentRepair.requestedKeys = [...new Set([...contentRepair.requestedKeys, ...repairPlan.keys])];
+        contentRepair.issueCodes = [...new Set([...contentRepair.issueCodes, ...repairPlan.issues.map((issue) => issue.code)])];
+        const originalValues = Object.fromEntries(repairPlan.keys.map((key) => [key, fills[key] || ""]));
+        const beforeErrorCount = contentQuality.issues.filter((issue) => issue.severity === "error").length;
+        const pass = {
+          attempt,
+          beforeScore: contentQuality.score,
+          afterScore: contentQuality.score,
+          requestedKeys: repairPlan.keys,
+          receivedKeys: [] as string[],
+          accepted: false,
+          error: undefined as string | undefined,
+        };
+        let stopRepair = false;
+
+        try {
+          const llmClient = new DeepSeekClient();
+          const response = await llmClient.generate({
+            presentationId,
+            themeId,
+            topic,
+            language,
+            fillKeys: repairPlan.keys,
+            imagePlan: buildImagePlanFromMap({ map, doc, presentationId, themeId, topic, language }),
+            mode: "content_repair",
+            strictKeysRequired: true,
+            deckPlan,
+            layoutContext: layoutEngineDiagnostics.selectedLayouts
+              .filter((row) => repairPlan.keys.some((key) => key.startsWith(`s${row.slide}_`)))
+              .map((row) => ({
+                slide: row.slide,
+                slideType: row.slideType,
+                layoutId: row.layoutId,
+                role: slideRole(row.slideType),
+                textDensity: slideDensity(row.slideType),
+              })),
+            repairContext: {
+              currentFills: originalValues,
+              issues: repairPlan.issues.map((issue) => ({
+                code: issue.code,
+                key: issue.key,
+                slide: issue.slide,
+                message: issue.message,
+              })),
+            },
+          });
+
+          pass.receivedKeys = Object.keys(response.fills).filter((key) => repairPlan.keys.includes(key));
+          contentRepair.receivedKeys = [...new Set([...contentRepair.receivedKeys, ...pass.receivedKeys])];
+          if (pass.receivedKeys.length !== repairPlan.keys.length) throw new Error("ContentRepairReturnedIncompleteFields");
+
+          for (const key of pass.receivedKeys) {
+            fills[key] = normalizeText(key, response.fills[key]);
+          }
+          applySafeFormatNormalizations(pass.receivedKeys);
+
+          for (const location of placeholderScan.locations) {
+            if (pass.receivedKeys.includes(location.key)) setAtPath(doc, location.path, fills[location.key]);
+          }
+
+          const candidateQuality = runContentQa({ fills, fillKeys, topic, deckPlan });
+          const candidateErrorCount = candidateQuality.issues.filter((issue) => issue.severity === "error").length;
+          const improved = candidateQuality.score > contentQuality.score
+            || (candidateQuality.score === contentQuality.score && candidateQuality.issues.length < contentQuality.issues.length);
+          pass.afterScore = candidateQuality.score;
+
+          if (improved && candidateErrorCount <= beforeErrorCount) {
+            contentQuality = candidateQuality;
+            pass.accepted = true;
+            contentRepair.acceptedPasses += 1;
+          } else {
+            for (const [key, value] of Object.entries(originalValues)) fills[key] = value;
+            for (const location of placeholderScan.locations) {
+              if (repairPlan.keys.includes(location.key)) setAtPath(doc, location.path, fills[location.key]);
+            }
+            stopRepair = true;
+          }
+        } catch (error) {
+          for (const [key, value] of Object.entries(originalValues)) fills[key] = value;
+          for (const location of placeholderScan.locations) {
+            if (repairPlan.keys.includes(location.key)) setAtPath(doc, location.path, fills[location.key]);
+          }
+          pass.error = error instanceof Error ? error.message : String(error);
+          contentRepair.error = pass.error;
+          stopRepair = true;
+          jobLogger.warn({ err: error, requestedKeys: repairPlan.keys }, "content repair pass failed");
+        }
+        contentRepair.passes.push(pass);
+        if (stopRepair) break;
+      }
+    }
+
+    contentRepair.accepted = contentRepair.acceptedPasses > 0;
+    contentRepair.afterScore = contentQuality.score;
+
+    jobLogger.info(contentRepair, "content repair completed");
+
+    const structuralContentRepair = {
+      enabled: CONTENT_REPAIR_ENABLED,
+      attempted: false,
+      acceptedPasses: 0,
+      passes: [] as Array<{
+        attempt: number;
+        strategy?: "field" | "itemized";
+        requestedKeys: string[];
+        receivedKeys: string[];
+        beforeErrorCount: number;
+        afterErrorCount: number;
+        accepted: boolean;
+        error?: string;
+      }>,
+      remainingErrorCount: contentQuality.issues.filter((issue) => issue.severity === "error").length,
+    };
+
+    if (CONTENT_REPAIR_ENABLED && LLM_ENABLED) {
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const blockingIssues = contentQuality.issues.filter((issue) => issue.severity === "error" && issue.key);
+        const requestedKeys = [...new Set(blockingIssues.flatMap((issue) => issue.key ? [issue.key] : []))]
+          .slice(0, Math.max(1, CONTENT_REPAIR_MAX_KEYS));
+        if (requestedKeys.length === 0) break;
+
+        structuralContentRepair.attempted = true;
+        const beforeErrorCount = contentQuality.issues.filter((issue) => issue.severity === "error").length;
+        const originalValues = Object.fromEntries(requestedKeys.map((key) => [key, fills[key] || ""]));
+        const pass = {
+          attempt,
+          strategy: "field" as const,
+          requestedKeys,
+          receivedKeys: [] as string[],
+          beforeErrorCount,
+          afterErrorCount: beforeErrorCount,
+          accepted: false,
+          error: undefined as string | undefined,
+        };
+
+        try {
+          const llmClient = new DeepSeekClient();
+          const response = await llmClient.generate({
+            presentationId,
+            themeId,
+            topic,
+            language,
+            fillKeys: requestedKeys,
+            imagePlan: buildImagePlanFromMap({ map, doc, presentationId, themeId, topic, language }),
+            mode: "content_repair",
+            strictKeysRequired: true,
+            deckPlan,
+            layoutContext: layoutEngineDiagnostics.selectedLayouts
+              .filter((row) => requestedKeys.some((key) => key.startsWith(`s${row.slide}_`)))
+              .map((row) => ({
+                slide: row.slide,
+                slideType: row.slideType,
+                layoutId: row.layoutId,
+                role: slideRole(row.slideType),
+                textDensity: slideDensity(row.slideType),
+              })),
+            repairContext: {
+              currentFills: originalValues,
+              issues: blockingIssues.map((issue) => ({
+                code: issue.code,
+                key: issue.key,
+                slide: issue.slide,
+                message: `${issue.message} Это обязательное структурное условие; верни точное количество отдельных строк.`,
+              })),
+            },
+          });
+
+          pass.receivedKeys = Object.keys(response.fills).filter((key) => requestedKeys.includes(key));
+          if (pass.receivedKeys.length !== requestedKeys.length) throw new Error("StructuralRepairReturnedIncompleteFields");
+          for (const key of requestedKeys) fills[key] = normalizeText(key, response.fills[key]);
+          applySafeFormatNormalizations(requestedKeys);
+          applyFillsByLocations(
+            doc,
+            placeholderScan.locations.filter((location) => requestedKeys.includes(location.key)),
+            fills,
+          );
+
+          const candidateQuality = runContentQa({ fills, fillKeys, topic, deckPlan });
+          const afterErrorCount = candidateQuality.issues.filter((issue) => issue.severity === "error").length;
+          pass.afterErrorCount = afterErrorCount;
+          pass.accepted = afterErrorCount < beforeErrorCount && candidateQuality.score >= contentQuality.score;
+          if (!pass.accepted) {
+            for (const key of requestedKeys) fills[key] = originalValues[key];
+            applyFillsByLocations(
+              doc,
+              placeholderScan.locations.filter((location) => requestedKeys.includes(location.key)),
+              fills,
+            );
+            structuralContentRepair.passes.push(pass);
+            break;
+          }
+
+          contentQuality = candidateQuality;
+          structuralContentRepair.acceptedPasses += 1;
+        } catch (error) {
+          for (const key of requestedKeys) fills[key] = originalValues[key];
+          applyFillsByLocations(
+            doc,
+            placeholderScan.locations.filter((location) => requestedKeys.includes(location.key)),
+            fills,
+          );
+          pass.error = error instanceof Error ? error.message : String(error);
+          jobLogger.warn({ err: error, requestedKeys, attempt }, "structural content repair failed");
+        }
+        structuralContentRepair.passes.push(pass);
+      }
+
+      const exactCountIssues = [...new Map(
+        contentQuality.issues
+          .filter((issue) => issue.severity === "error" && issue.key && typeof issue.expected === "number" && issue.expected > 0)
+          .map((issue) => [issue.key as string, issue]),
+      ).values()];
+      for (const issue of exactCountIssues) {
+        const key = issue.key as string;
+        const expected = issue.expected as number;
+        const itemKeys = buildItemizedRepairKeys(key, expected);
+        const currentItems = splitContentItems(fills[key] || "");
+        const currentFills = Object.fromEntries(itemKeys.map((itemKey, index) => [itemKey, currentItems[index] || ""]));
+        const originalValue = fills[key] || "";
+        const beforeErrorCount = contentQuality.issues.filter((item) => item.severity === "error").length;
+        const pass = {
+          attempt: structuralContentRepair.passes.length + 1,
+          strategy: "itemized" as const,
+          requestedKeys: itemKeys,
+          receivedKeys: [] as string[],
+          beforeErrorCount,
+          afterErrorCount: beforeErrorCount,
+          accepted: false,
+          error: undefined as string | undefined,
+        };
+        structuralContentRepair.attempted = true;
+
+        try {
+          const llmClient = new DeepSeekClient();
+          const response = await llmClient.generate({
+            presentationId,
+            themeId,
+            topic,
+            language,
+            fillKeys: itemKeys,
+            imagePlan: buildImagePlanFromMap({ map, doc, presentationId, themeId, topic, language }),
+            mode: "content_repair",
+            strictKeysRequired: true,
+            deckPlan,
+            layoutContext: layoutEngineDiagnostics.selectedLayouts
+              .filter((row) => key.startsWith(`s${row.slide}_`))
+              .map((row) => ({
+                slide: row.slide,
+                slideType: row.slideType,
+                layoutId: row.layoutId,
+                role: slideRole(row.slideType),
+                textDensity: slideDensity(row.slideType),
+              })),
+            repairContext: {
+              currentFills,
+              issues: itemKeys.map((itemKey, index) => ({
+                code: "required_count_item",
+                key: itemKey,
+                slide: issue.slide,
+                message: `Сформулируй ровно один самостоятельный содержательный пункт ${index + 1} из ${expected}; не объединяй его с другими пунктами.`,
+              })),
+            },
+          });
+
+          pass.receivedKeys = Object.keys(response.fills).filter((itemKey) => itemKeys.includes(itemKey));
+          if (pass.receivedKeys.length !== itemKeys.length) throw new Error("ExactCountRepairReturnedIncompleteFields");
+          fills[key] = normalizeText(key, composeExactBulletBlock(response.fills, itemKeys));
+          applySafeFormatNormalizations([key]);
+          applyFillsByLocations(
+            doc,
+            placeholderScan.locations.filter((location) => location.key === key),
+            fills,
+          );
+
+          const candidateQuality = runContentQa({ fills, fillKeys, topic, deckPlan });
+          pass.afterErrorCount = candidateQuality.issues.filter((item) => item.severity === "error").length;
+          pass.accepted = pass.afterErrorCount < beforeErrorCount && candidateQuality.score >= contentQuality.score;
+          if (pass.accepted) {
+            contentQuality = candidateQuality;
+            structuralContentRepair.acceptedPasses += 1;
+          } else {
+            fills[key] = originalValue;
+            applyFillsByLocations(
+              doc,
+              placeholderScan.locations.filter((location) => location.key === key),
+              fills,
+            );
+          }
+        } catch (error) {
+          fills[key] = originalValue;
+          applyFillsByLocations(
+            doc,
+            placeholderScan.locations.filter((location) => location.key === key),
+            fills,
+          );
+          pass.error = error instanceof Error ? error.message : String(error);
+          jobLogger.warn({ err: error, key, expected }, "itemized exact-count repair failed");
+        }
+        structuralContentRepair.passes.push(pass);
+      }
+    }
+    structuralContentRepair.remainingErrorCount = contentQuality.issues.filter((issue) => issue.severity === "error").length;
+    jobLogger.info(structuralContentRepair, "structural content repair completed");
+
+    const actualContentDensity = inferContentDensityFromFills(fills, slideCount);
+    layoutEngineDiagnostics.actualContentDensity = actualContentDensity;
+    layoutEngineDiagnostics.postFillSelectionUsed = false;
+    layoutEngineDiagnostics.postFillLayoutChanges = [];
+    if (LAYOUT_ENGINE_ENABLED && layoutEngineDiagnostics.mode !== "legacy_fallback") {
+      try {
+        const beforeLayouts = new Map(layoutEngineDiagnostics.selectedLayouts.map((row) => [row.slide, row.layoutId]));
+        const recompiled = await compileLayoutPresentation({
+          presentationId,
+          themeId,
+          jobId,
+          variation: LAYOUT_ENGINE_VARIATION,
+          legacyTemplateZipPath: templatePath,
+          deckPlan,
+          topic,
+          language: language || "ru",
+          contentDensityBySlide: actualContentDensity,
+        });
+        const changes = recompiled.diagnostics.selectedLayouts.flatMap((row) => {
+          const before = beforeLayouts.get(row.slide);
+          return before && before !== row.layoutId ? [{ slide: row.slide, before, after: row.layoutId }] : [];
+        });
+        layoutEngineDiagnostics.postFillSelectionUsed = true;
+        layoutEngineDiagnostics.postFillLayoutChanges = changes;
+
+        if (changes.length > 0) {
+          const candidateDoc = recompiled.doc;
+          normalizePlaceholders(candidateDoc);
+          const candidatePlaceholderScan = extractPlaceholderLocations(candidateDoc);
+          const postFillKeys = new Set(candidatePlaceholderScan.locations.map((location) => location.key));
+          const incompatibleKeys = fillKeys.filter((key) => !postFillKeys.has(key));
+          if (incompatibleKeys.length > 0) throw new Error(`PostFillLayoutMissingKeys: ${incompatibleKeys.join(",")}`);
+
+          (doc as Record<string, unknown>).slides = ((candidateDoc as Record<string, unknown>).slides || []) as unknown[];
+          templatePath = recompiled.templateZipPath;
+          layoutIds = recompiled.layoutIds;
+          layoutEngineDiagnostics = {
+            ...recompiled.diagnostics,
+            postFillSelectionUsed: true,
+            postFillLayoutChanges: changes,
+            actualContentDensity,
+          };
+          placeholderScan = candidatePlaceholderScan;
+
+          const mapSlides = ((map as Record<string, unknown>).slides && typeof (map as Record<string, unknown>).slides === "object"
+            ? (map as Record<string, unknown>).slides
+            : {}) as Record<string, unknown>;
+          for (const rawSlide of Object.values(mapSlides)) {
+            if (rawSlide && typeof rawSlide === "object") delete (rawSlide as Record<string, unknown>).imageAt;
+          }
+          for (const [slide, imageAt] of Object.entries(recompiled.imageAtBySlide)) {
+            const slideRow = (mapSlides[slide] && typeof mapSlides[slide] === "object" ? mapSlides[slide] : {}) as Record<string, unknown>;
+            slideRow.imageAt = imageAt;
+            mapSlides[slide] = slideRow;
+          }
+          (map as Record<string, unknown>).slides = mapSlides;
+
+          preVariantDoc = JSON.parse(JSON.stringify(doc)) as unknown;
+          variantsStats = applyVariants(doc, map, { presentationId }, fills, {
+            onDropAtOutOfRange: ({ slideIndex, badIndex }) => {
+              jobLogger.warn({ slideIndex, badIndex }, "post-fill dropAt index out of range");
+            },
+          });
+          placeholderScan = extractPlaceholderLocations(doc);
+          fillsStats = applyFillsByLocations(doc, placeholderScan.locations, fills);
+          imageSlots = extractImageSlots(doc);
+          slideCount = inferSlideCount(doc);
+        }
+      } catch (error) {
+        jobLogger.warn({ err: error }, "post-fill layout selection failed; keeping initial compiled layouts");
+      }
+    }
+
+    formatNormalizations.documentTextCount = normalizeDocumentBulletMarkers(doc);
+
     const theme = await readThemeSafe(themeId);
+    const layoutThemeStats = applyLayoutThemeStyles({ doc, theme });
     const themeTypography = resolveThemeTypography(themeId, theme);
     const typographyStats = applyTypographyStandards({
       doc,
       placeholderLocations: placeholderScan.locations,
       themeTypography,
     });
-    const textFitStats = autoFitText({
+    let contentAwareLayoutStats = adaptLayoutToContent(doc);
+    let textFitStats = autoFitText({
       doc,
       placeholderLocations: placeholderScan.locations,
       themeTypography,
     });
+    if (textFitStats.overflowCount > 0) {
+      const repeatedLayoutStats = adaptLayoutToContent(doc);
+      contentAwareLayoutStats = {
+        groupsFound: Math.max(contentAwareLayoutStats.groupsFound, repeatedLayoutStats.groupsFound),
+        groupsAdjusted: contentAwareLayoutStats.groupsAdjusted + repeatedLayoutStats.groupsAdjusted,
+        groupsCompacted: contentAwareLayoutStats.groupsCompacted + repeatedLayoutStats.groupsCompacted,
+        groupsExpanded: contentAwareLayoutStats.groupsExpanded + repeatedLayoutStats.groupsExpanded,
+        elementsMoved: contentAwareLayoutStats.elementsMoved + repeatedLayoutStats.elementsMoved,
+        overflowRiskCount: repeatedLayoutStats.overflowRiskCount,
+        titlesAdjusted: contentAwareLayoutStats.titlesAdjusted + repeatedLayoutStats.titlesAdjusted,
+        fontFallbackCount: contentAwareLayoutStats.fontFallbackCount + repeatedLayoutStats.fontFallbackCount,
+      };
+      textFitStats = autoFitText({
+        doc,
+        placeholderLocations: placeholderScan.locations,
+        themeTypography,
+      });
+    }
+
+    const overflowRepair = {
+      attempted: false,
+      accepted: false,
+      beforeOverflowCount: textFitStats.overflowCount,
+      afterOverflowCount: textFitStats.overflowCount,
+      requestedKeys: [] as string[],
+      receivedKeys: [] as string[],
+      error: undefined as string | undefined,
+    };
+    if (LLM_ENABLED && textFitStats.overflowCount > 0) {
+      const overflowingItems = textFitStats.items.filter((item) => item.overflowAfterFit);
+      const requestedKeys = [...new Set(overflowingItems.map((item) => item.key))];
+      overflowRepair.requestedKeys = requestedKeys;
+      overflowRepair.attempted = requestedKeys.length > 0;
+
+      if (requestedKeys.length > 0) {
+        const originalValues = Object.fromEntries(requestedKeys.map((key) => [key, fills[key] || ""]));
+        const docSnapshot = JSON.parse(JSON.stringify(doc)) as Record<string, unknown>;
+        const beforeTextFitStats = textFitStats;
+        const beforeContentAwareStats = contentAwareLayoutStats;
+        const beforeQuality = contentQuality;
+        try {
+          const llmClient = new DeepSeekClient();
+          const response = await llmClient.generate({
+            presentationId,
+            themeId,
+            topic,
+            language,
+            fillKeys: requestedKeys,
+            imagePlan: buildImagePlanFromMap({ map, doc, presentationId, themeId, topic, language }),
+            mode: "content_repair",
+            strictKeysRequired: true,
+            deckPlan,
+            layoutContext: layoutEngineDiagnostics.selectedLayouts
+              .filter((row) => requestedKeys.some((key) => key.startsWith(`s${row.slide}_`)))
+              .map((row) => ({
+                slide: row.slide,
+                slideType: row.slideType,
+                layoutId: row.layoutId,
+                role: slideRole(row.slideType),
+                textDensity: slideDensity(row.slideType),
+              })),
+            repairContext: {
+              currentFills: originalValues,
+              issues: overflowingItems.map((item) => ({
+                code: "layout_overflow",
+                key: item.key,
+                slide: item.slide,
+                message: `Текст занимает ${item.requiredLines} строк при доступных ${item.maxLines}. Сократи до ${Math.max(60, Math.floor((fills[item.key]?.length || 0) * item.maxLines / Math.max(1, item.requiredLines) * 0.88))} символов без потери фактов и требуемой структуры.`,
+              })),
+            },
+          });
+
+          overflowRepair.receivedKeys = Object.keys(response.fills).filter((key) => requestedKeys.includes(key));
+          if (overflowRepair.receivedKeys.length !== requestedKeys.length) throw new Error("OverflowRepairReturnedIncompleteFields");
+          for (const key of requestedKeys) fills[key] = normalizeText(key, response.fills[key]);
+          applySafeFormatNormalizations(requestedKeys);
+          applyFillsByLocations(
+            doc,
+            placeholderScan.locations.filter((location) => requestedKeys.includes(location.key)),
+            fills,
+          );
+          applyTypographyStandards({ doc, placeholderLocations: placeholderScan.locations, themeTypography });
+          const candidateContentAwareStats = adaptLayoutToContent(doc);
+          const candidateTextFitStats = autoFitText({
+            doc,
+            placeholderLocations: placeholderScan.locations,
+            themeTypography,
+          });
+          const candidateQuality = runContentQa({ fills, fillKeys, topic, deckPlan });
+          const beforeErrors = beforeQuality.issues.filter((issue) => issue.severity === "error").length;
+          const candidateErrors = candidateQuality.issues.filter((issue) => issue.severity === "error").length;
+          const accepted = candidateTextFitStats.overflowCount < beforeTextFitStats.overflowCount
+            && candidateErrors <= beforeErrors
+            && candidateQuality.score >= beforeQuality.score - 5;
+
+          overflowRepair.afterOverflowCount = candidateTextFitStats.overflowCount;
+          overflowRepair.accepted = accepted;
+          if (accepted) {
+            textFitStats = candidateTextFitStats;
+            contentAwareLayoutStats = candidateContentAwareStats;
+            contentQuality = candidateQuality;
+          } else {
+            for (const key of requestedKeys) fills[key] = originalValues[key];
+            const docRecord = doc as Record<string, unknown>;
+            for (const key of Object.keys(docRecord)) delete docRecord[key];
+            Object.assign(docRecord, docSnapshot);
+            textFitStats = beforeTextFitStats;
+            contentAwareLayoutStats = beforeContentAwareStats;
+          }
+        } catch (error) {
+          for (const key of requestedKeys) fills[key] = originalValues[key];
+          const docRecord = doc as Record<string, unknown>;
+          for (const key of Object.keys(docRecord)) delete docRecord[key];
+          Object.assign(docRecord, docSnapshot);
+          textFitStats = beforeTextFitStats;
+          contentAwareLayoutStats = beforeContentAwareStats;
+          overflowRepair.error = error instanceof Error ? error.message : String(error);
+          jobLogger.warn({ err: error, requestedKeys }, "layout overflow repair failed");
+        }
+      }
+    }
 
     await job.updateProgress(75);
     jobLogger.info({ stage: "apply_variants_fills" }, "progress updated");
@@ -1064,13 +1631,18 @@ const worker = new Worker(
       }
 
       for (const slot of imagePlanDocument.slots as Array<{ slotId: string; slide: number; kind: "hero" | "photo" | "icon" | "other"; query: string; hint: string | null; negative?: string[]; styleHint?: string }>) {
-        const needsFallback = !slot.query || slot.query.toLowerCase().includes("слайд") || slot.query.toLowerCase().includes("topic");
+        const needsFallback = !slot.query
+          || slot.query.toLowerCase().includes("слайд")
+          || slot.query.toLowerCase().includes("topic")
+          || isGenericImageQuery(slot.query)
+          || !isImagePromptLanguageCompatible(slot.query, language);
         if (needsFallback) {
           const fallback = buildImagePromptFallback({
             topic,
             slideTitle: fills[`s${slot.slide}_title`] || "",
             slideSummary: slideSummaries[slot.slide]?.summary || topic,
             kind: slot.kind,
+            language,
           });
           slot.query = fallback.query;
           slot.hint = fallback.hint;
@@ -1081,7 +1653,7 @@ const worker = new Worker(
 
       for (const slot of imagePlanDocument.slots as Array<{ slotId: string; slide: number; kind: "hero" | "photo" | "icon" | "other"; query: string; hint: string | null; negative?: string[]; styleHint?: string }>) {
         const summary = slideSummaries[slot.slide];
-        slot.query = applySlideTypeHeuristics(slot.query, summary?.slideType || "general");
+        slot.query = applySlideTypeHeuristics(slot.query, summary?.slideType || "general", slot.kind);
         slot.query = slot.query.replace(/["':]/g, "").replace(/\s+/g, " ").trim();
         if (slot.hint) {
           slot.hint = slot.hint.replace(/["':]/g, "").replace(/\s+/g, " ").trim();
@@ -1089,6 +1661,25 @@ const worker = new Worker(
       }
 
       const dedupStats = enforceImagePromptUniqueness(imagePlanDocument.slots, slideSummaries, topic);
+      for (const slot of imagePlanDocument.slots as Array<{ slotId: string; slide: number; kind: "hero" | "photo" | "icon" | "other"; query: string; hint: string | null; negative?: string[]; styleHint?: string }>) {
+        const queryIsValid = isImagePromptLanguageCompatible(slot.query, language) && !isGenericImageQuery(slot.query);
+        const hintIsValid = !slot.hint || isImagePromptLanguageCompatible(slot.hint, language);
+        if (queryIsValid && hintIsValid) continue;
+        const fallback = buildImagePromptFallback({
+          topic,
+          slideTitle: fills[`s${slot.slide}_title`] || "",
+          slideSummary: slideSummaries[slot.slide]?.summary || topic,
+          kind: slot.kind,
+          language,
+        });
+        slot.query = applySlideTypeHeuristics(fallback.query, slideSummaries[slot.slide]?.slideType || "general", slot.kind)
+          .replace(/["':]/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        slot.hint = fallback.hint;
+        slot.negative = fallback.negative;
+        slot.styleHint = slot.styleHint || fallback.styleHint;
+      }
       imagePromptsDiagnostics.duplicatesBefore = dedupStats.duplicatesBefore;
       imagePromptsDiagnostics.duplicatesAfter = dedupStats.duplicatesAfter;
       imagePromptsDiagnostics.badGenericCount = dedupStats.badGenericCount;
@@ -1171,8 +1762,13 @@ const worker = new Worker(
           scale: themeTypography.scale,
           sizes: themeTypography.sizes,
         },
+        layoutVisuals: layoutThemeStats,
+        contentAwareLayout: contentAwareLayoutStats,
         textFit: textFitStats,
+        overflowRepair,
         contentQuality,
+        contentRepair,
+        structuralContentRepair,
         imagePrompts: imagePromptsDiagnostics,
         stats: {
           slides: slideCount,
@@ -1578,6 +2174,8 @@ const worker = new Worker(
       deckPlanRoute,
       formatNormalizations,
       contentQuality,
+      contentRepair,
+      structuralContentRepair,
       rag: {
         enabled: ragEnabledForJob,
         ok: ragEnabledForJob ? !ragError : false,
@@ -1685,8 +2283,19 @@ const worker = new Worker(
       "job completed"
     );
 
+    await recordOperationalEvent(getQueueRedisConnection(), {
+      service: "orchestrator",
+      event: "generation.completed",
+      level: "info",
+      requestId,
+      presentationId,
+    }).catch((error) => jobLogger.warn({ err: error }, "completion metric write failed"));
     return result;
     } finally {
+      if (userSlotAcquired) {
+        await releaseUserSlot(getQueueRedisConnection(), userId, jobId, userSlotAcquired)
+          .catch((error) => jobLogger.warn({ err: error }, "user slot release failed"));
+      }
       await fs.unlink(jobLockPath).catch(() => undefined);
     }
   },
@@ -1698,6 +2307,16 @@ const worker = new Worker(
 
 worker.on("failed", (job, error) => {
   logger.child({ jobId: job?.id }).error({ err: error }, "job failed");
+  if (job) {
+    void recordOperationalEvent(getQueueRedisConnection(), {
+      service: "orchestrator",
+      event: "generation.failed",
+      level: "error",
+      requestId: typeof job.data?.requestId === "string" ? job.data.requestId : undefined,
+      presentationId: typeof job.data?.presentationId === "number" ? job.data.presentationId : undefined,
+      errorCode: error.name || "generation_failed",
+    }).catch(() => undefined);
+  }
 });
 
 worker.on("error", (error) => {

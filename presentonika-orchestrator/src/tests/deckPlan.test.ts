@@ -26,6 +26,13 @@ export const runDeckPlanTests = async (): Promise<void> => {
   });
 
   assert.equal(deckPlanSchema.safeParse(deckPlan).success, true);
+  const overCapacityQuiz = {
+    ...deckPlan,
+    slides: deckPlan.slides.map((slide) => slide.slideType === "quiz"
+      ? { ...slide, requiredItems: [{ slot: "questions", kind: "questions" as const, count: 4, exact: true }] }
+      : slide),
+  };
+  assert.equal(deckPlanSchema.safeParse(overCapacityQuiz).success, false);
   assert.equal(deckPlan.version, 1);
   assert.ok(deckPlan.centralQuestion.length > 0);
   assert.ok(deckPlan.thesis.length > 0);
@@ -45,6 +52,7 @@ export const runDeckPlanTests = async (): Promise<void> => {
   assert.ok(plannerPrompt.includes("Use these slideType slot contracts exactly"));
   assert.ok(plannerPrompt.includes("cover: allowedSlots=title,subtitle,meta; contentCountSlots=none"));
   assert.ok(plannerPrompt.includes("Do NOT create requiredItems for title/subtitle/meta"));
+  assert.ok(plannerPrompt.includes("Use exactly one summary/conclusion slide"));
   assert.ok(deckPlan.slides[0].titleIntent.includes("главный вопрос"));
   assert.ok(deckPlan.slides[1].mustAvoid.some((value) => value.includes("слабые глаголы")));
   assert.ok(deckPlan.slides[0].relationToNext?.includes("следующему шагу"));
@@ -165,6 +173,51 @@ export const runDeckPlanTests = async (): Promise<void> => {
   assert.ok(normalized.normalization.normalizedSlideRoles >= 1);
   assert.ok(normalized.normalization.warnings.some((warning) => warning.includes("bullet -> bullets")));
   assert.ok(normalized.normalization.warnings.some((warning) => warning.includes("relationToPrevious")));
+
+  const earlySummaryPlan = {
+    ...rawLlmPlan,
+    slides: [
+      ...rawLlmPlan.slides.slice(0, 8),
+      { ...rawLlmPlan.slides[9], slide: 9 },
+      { ...rawLlmPlan.slides[8], slide: 10 },
+    ],
+  };
+  const reorderedSummary = normalizeLlmDeckPlanCandidate(earlySummaryPlan, planRequest);
+  assert.equal(reorderedSummary.deckPlan.slides.at(-1)?.slideType, "summary");
+  assert.deepEqual(reorderedSummary.deckPlan.slides.map((slide) => slide.slide), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  assert.ok(reorderedSummary.normalization.warnings.some((warning) => warning.includes("moved summary from 9 to final position")));
+
+  const separateHomeworkPlan = {
+    ...rawLlmPlan,
+    slides: rawLlmPlan.slides.map((slide) => slide.slide === 9
+      ? {
+          ...slide,
+          slideType: "summary",
+          role: "conclusion",
+          titleIntent: "Подвести итоги",
+          claim: "Ответить на главный вопрос урока.",
+          requiredItems: [{ slot: "summary", kind: "summary", count: 3, exact: true }],
+        }
+      : slide),
+  };
+  const normalizedHomework = normalizeLlmDeckPlanCandidate(separateHomeworkPlan, planRequest);
+  assert.equal(normalizedHomework.deckPlan.slides.at(-1)?.role, "conclusion");
+  assert.equal(normalizedHomework.deckPlan.slides.filter((slide) => slide.slideType === "summary").length, 1);
+  assert.equal(normalizedHomework.deckPlan.slides[8].slideType, "bullets");
+  assert.equal(normalizedHomework.deckPlan.slides[8].role, "application");
+  assert.equal(normalizedHomework.deckPlan.slides[8].requiredItems[0].slot, "bullets");
+  assert.ok(normalizedHomework.normalization.warnings.some((warning) => warning.includes("standalone homework summary")));
+  assert.ok(normalizedHomework.normalization.warnings.some((warning) => warning.includes("moved summary from 9 to final position")));
+
+  const incompatibleRolePlan = {
+    ...rawLlmPlan,
+    slides: rawLlmPlan.slides.map((slide) => slide.slide === 9
+      ? { ...slide, slideType: "visual_explanation", role: "conclusion", requiredItems: [] }
+      : slide),
+  };
+  const normalizedRole = normalizeLlmDeckPlanCandidate(incompatibleRolePlan, planRequest);
+  assert.equal(normalizedRole.deckPlan.slides[8].role, "evidence_mechanism");
+  assert.ok(normalizedRole.normalization.warnings.some((warning) => warning.includes("normalized incompatible conclusion role")));
   assert.throws(() => normalizeLlmDeckPlanCandidate({ ...rawLlmPlan, centralQuestion: "", slides: [] }, planRequest));
   assert.throws(() => normalizeLlmDeckPlanCandidate({ ...rawLlmPlan, centralQuestion: null }, planRequest));
   const autoPlan = normalizeLlmDeckPlanCandidate({ ...rawLlmPlan, presentationType: "auto" }, planRequest);

@@ -16,7 +16,7 @@ const createLayoutDebugLabel = (layoutId: string): AnyRecord => ({
   height: 26,
   text: `layout: ${layoutId}`,
   style: {
-    fontFamily: "Times New Roman",
+    fontFamily: "Inter",
     fontSize: 13,
     lineHeight: 1,
     color: "#6B7280",
@@ -112,7 +112,11 @@ export const mergeLayoutSlides = async (params: {
   }
 
   return {
-    doc: { slides: docSlides },
+    doc: {
+      schemaVersion: 1,
+      slideSize: { width: 1536, height: 864, unit: "px" },
+      slides: docSlides,
+    },
     extraEntries,
     mergedAssetsCount: Object.keys(extraEntries).length,
   };

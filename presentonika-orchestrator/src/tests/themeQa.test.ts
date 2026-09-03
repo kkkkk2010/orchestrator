@@ -3,17 +3,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { normalizeBackgroundTheme } from "../backgrounds/theme";
 import type { PlaceholderLocation } from "../templates/applyFills";
-import { applyTypographyStandards, resolveThemeTypography } from "../templates/textPostprocess";
+import { applyTypographyStandards, autoFitText, resolveThemeTypography } from "../templates/textPostprocess";
+import { applyLayoutThemeStyles, resolveLayoutThemeTokens } from "../templates/layoutTheme";
 
 const THEME_IDS = ["teacher-dark", "teacher-light", "teacher-bright"] as const;
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 const STYLE_ROLES = ["title", "subtitle", "body", "small", "muted", "bullets"] as const;
 
-const TOP_LEVEL_KEYS = ["id", "name", "version", "mode", "palette", "background", "typography"];
+const TOP_LEVEL_KEYS = ["id", "name", "version", "mode", "palette", "background", "visual", "typography"];
 const PALETTE_KEYS = ["bg1", "bg2", "accent"];
 const BACKGROUND_KEYS = ["blobs", "grain", "gradientStrength", "blobAlphaMin", "blobAlphaMax", "vignette", "accentBlobChance"];
-const TYPOGRAPHY_KEYS = ["fontFamily", "sizes", "lineHeights", "colors"];
+const TYPOGRAPHY_KEYS = ["fontFamily", "displayFontFamily", "sizes", "lineHeights", "colors"];
 const COLOR_KEYS = ["title", "body", "muted"];
+const VISUAL_KEYS = ["surface", "surfaceAlt", "accentSoft", "highlight", "highlightSoft", "border", "inverse", "shadow", "onAccent", "onHighlight", "accentText", "onInverse", "mutedText"];
 
 const toRecord = (value: unknown, label: string): Record<string, unknown> => {
   assert.ok(value && typeof value === "object" && !Array.isArray(value), `${label} must be an object`);
@@ -89,6 +91,7 @@ const validateThemeJson = (themeId: string): void => {
 
   const palette = toRecord(theme.palette, `${themeId} palette`);
   const background = toRecord(theme.background, `${themeId} background`);
+  const visual = toRecord(theme.visual, `${themeId} visual`);
   const typography = toRecord(theme.typography, `${themeId} typography`);
   const sizes = toRecord(typography.sizes, `${themeId} typography.sizes`);
   const lineHeights = toRecord(typography.lineHeights, `${themeId} typography.lineHeights`);
@@ -96,6 +99,7 @@ const validateThemeJson = (themeId: string): void => {
 
   assertOnlyKeys(palette, PALETTE_KEYS, `${themeId} palette`);
   assertOnlyKeys(background, BACKGROUND_KEYS, `${themeId} background`);
+  assertOnlyKeys(visual, VISUAL_KEYS, `${themeId} visual`);
   assertOnlyKeys(typography, TYPOGRAPHY_KEYS, `${themeId} typography`);
   assertOnlyKeys(sizes, STYLE_ROLES, `${themeId} typography.sizes`);
   assertOnlyKeys(lineHeights, STYLE_ROLES, `${themeId} typography.lineHeights`);
@@ -108,13 +112,15 @@ const validateThemeJson = (themeId: string): void => {
   const bodyColor = assertHex(colors.body, `${themeId} typography.colors.body`);
   assertHex(colors.muted, `${themeId} typography.colors.muted`);
 
-  assert.equal(typography.fontFamily, "Times New Roman");
+  assert.equal(typography.fontFamily, "Inter");
+  assert.equal(typography.displayFontFamily, "Manrope");
+  for (const key of VISUAL_KEYS) assertHex(visual[key], `${themeId} visual.${key}`);
   for (const role of STYLE_ROLES) {
     assertNumberInRange(sizes[role], 8, 96, `${themeId} typography.sizes.${role}`);
     assertNumberInRange(lineHeights[role], 0.8, 2, `${themeId} typography.lineHeights.${role}`);
   }
 
-  const blobs = assertNumberInRange(background.blobs, 1, 4, `${themeId} background.blobs`);
+  const blobs = assertNumberInRange(background.blobs, 0, 4, `${themeId} background.blobs`);
   assert.ok(Number.isInteger(blobs), `${themeId} background.blobs must be an integer`);
   assertNumberInRange(background.grain, 0, 0.3, `${themeId} background.grain`);
   assertNumberInRange(background.gradientStrength, 0.8, 2.5, `${themeId} background.gradientStrength`);
@@ -128,6 +134,14 @@ const validateThemeJson = (themeId: string): void => {
     assert.ok(contrastRatio(titleColor, bg) >= 4.5, `${themeId} title contrast is too low against ${bg}`);
     assert.ok(contrastRatio(bodyColor, bg) >= 4.5, `${themeId} body contrast is too low against ${bg}`);
   }
+  assert.ok(
+    contrastRatio(visual.onAccent as string, palette.accent as string) >= 4.5,
+    `${themeId} onAccent contrast is too low`,
+  );
+  assert.ok(
+    contrastRatio(visual.onHighlight as string, visual.highlight as string) >= 4.5,
+    `${themeId} onHighlight contrast is too low`,
+  );
 
   if (themeId === "teacher-bright") {
     const darkBackground = luminance(bg1) < 0.3 && luminance(bg2) < 0.3;
@@ -157,19 +171,22 @@ const withEnv = (updates: Record<string, string | undefined>, fn: () => void): v
 };
 
 const runTypographyResolverTests = (): void => {
-  withEnv({ FONT_FAMILY_DEFAULT: "Times New Roman" }, () => {
-    const typography = resolveThemeTypography("teacher-light", { mode: "light", typography: { fontFamily: "Aptos" } });
-    assert.equal(typography.fontFamily, "Times New Roman");
+  withEnv({ FONT_FAMILY_DEFAULT: "Inter", FONT_FAMILY_DISPLAY: "Manrope" }, () => {
+    const typography = resolveThemeTypography("teacher-light", { mode: "light", typography: { fontFamily: "Aptos", displayFontFamily: "Aptos Display" } });
+    assert.equal(typography.fontFamily, "Inter");
+    assert.equal(typography.displayFontFamily, "Manrope");
   });
 
-  withEnv({ FONT_FAMILY_DEFAULT: "" }, () => {
-    const typography = resolveThemeTypography("teacher-light", { mode: "light", typography: { fontFamily: "Aptos" } });
+  withEnv({ FONT_FAMILY_DEFAULT: "", FONT_FAMILY_DISPLAY: "" }, () => {
+    const typography = resolveThemeTypography("teacher-light", { mode: "light", typography: { fontFamily: "Aptos", displayFontFamily: "Aptos Display" } });
     assert.equal(typography.fontFamily, "Aptos");
+    assert.equal(typography.displayFontFamily, "Aptos Display");
   });
 
-  withEnv({ FONT_FAMILY_DEFAULT: undefined }, () => {
+  withEnv({ FONT_FAMILY_DEFAULT: undefined, FONT_FAMILY_DISPLAY: undefined }, () => {
     const typography = resolveThemeTypography("teacher-light", { mode: "light", typography: {} });
-    assert.equal(typography.fontFamily, "Times New Roman");
+    assert.equal(typography.fontFamily, "Inter");
+    assert.equal(typography.displayFontFamily, "Manrope");
   });
 
   const doc = { slides: [{ elements: [{ text: "Title", style: {} }] }] };
@@ -180,6 +197,7 @@ const runTypographyResolverTests = (): void => {
   const lightTypography = resolveThemeTypography("teacher-dark", { mode: "light", typography: { colors: { title: "#111827" } } });
   assert.equal(applyTypographyStandards({ doc, placeholderLocations: locations, themeTypography: darkTypography }).themeColorMode, "dark");
   assert.equal(applyTypographyStandards({ doc, placeholderLocations: locations, themeTypography: lightTypography }).themeColorMode, "light");
+  assert.equal((doc.slides[0].elements[0] as { style: Record<string, unknown> }).style.fontFamily, "Manrope");
 
   withEnv({ TYPOGRAPHY_USE_THEME_SIZES: "true", TYPOGRAPHY_SCALE: "1" }, () => {
     const typography = resolveThemeTypography("teacher-light", {
@@ -223,9 +241,56 @@ const runBackgroundNormalizationTests = (): void => {
   assert.equal(normalized.background.accentBlobChance, 0.7);
 };
 
+const runTextFitTests = (): void => {
+  const longText = "• Первый содержательный пункт с объяснением и важным выводом для ученика.\n• Второй содержательный пункт с объяснением и важным выводом для ученика.\n• Третий содержательный пункт с объяснением и важным выводом для ученика.";
+  const doc = { slides: [{ elements: [{ text: longText, width: 360, height: 110, style: {} }] }] };
+  const locations: PlaceholderLocation[] = [
+    { key: "s2_bullets", slide: 1, elementIndex: 0, path: "slides[0].elements[0].text", rawSnippet: "{{s2_bullets}}" },
+  ];
+  const typography = resolveThemeTypography("teacher-light", readTheme("teacher-light"));
+  applyTypographyStandards({ doc, placeholderLocations: locations, themeTypography: typography });
+  let stats: ReturnType<typeof autoFitText>;
+  withEnv({ TEXT_FIT_SHORTEN: "true" }, () => {
+    stats = autoFitText({ doc, placeholderLocations: locations, themeTypography: typography });
+  });
+  const element = doc.slides[0].elements[0] as { text: string; style: Record<string, unknown> };
+
+  assert.equal(element.style.fontSize, typography.sizes.bullets);
+  assert.equal(stats!.items[0]?.wasShrunk, false);
+  assert.equal(stats!.items[0]?.finalFontSize, typography.sizes.bullets);
+  assert.equal(stats!.truncatedCount, 1);
+  assert.ok(element.text.length < longText.length);
+  assert.equal(element.text.includes("…"), false);
+  assert.ok(element.text.split("\n").every((line) => /[.!?]$/u.test(line)));
+};
+
+const runLayoutThemeTests = (): void => {
+  const theme = readTheme("teacher-light");
+  const tokens = resolveLayoutThemeTokens(theme);
+  const doc = {
+    slides: [{
+      elements: [
+        { type: "shape", style: {}, meta: { layoutThemeRole: "surface" } },
+        { type: "text", style: {}, meta: { layoutTextRole: "accent" } },
+        { type: "image", style: {}, meta: { layoutRole: "media" } },
+      ],
+    }],
+  };
+  const stats = applyLayoutThemeStyles({ doc, theme });
+  const elements = doc.slides[0].elements as Array<{ style: Record<string, unknown> }>;
+  assert.equal(elements[0].style.fill, tokens.surface);
+  assert.equal(elements[0].style.stroke, tokens.border);
+  assert.equal(elements[1].style.color, tokens.accentText);
+  assert.equal(elements[1].style.fontFamily, "Inter");
+  assert.equal(elements[2].style.borderRadius, 28);
+  assert.deepEqual(stats, { shapesStyled: 1, fixedTextStyled: 1, imagesStyled: 1 });
+};
+
 export const runThemeQaTests = (): void => {
   THEME_IDS.forEach(validateThemeJson);
   THEME_IDS.forEach(validateThemeTemplate);
   runTypographyResolverTests();
+  runTextFitTests();
   runBackgroundNormalizationTests();
+  runLayoutThemeTests();
 };

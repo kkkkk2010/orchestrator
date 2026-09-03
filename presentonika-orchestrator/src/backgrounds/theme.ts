@@ -74,7 +74,7 @@ export const normalizeBackgroundTheme = (theme: unknown): BackgroundTheme => {
   const bg2 = hexToRgb(raw.palette?.bg2 ?? defaults.bg2, { r: 42, g: 27, b: 94 });
   const accent = hexToRgb(raw.palette?.accent ?? defaults.accent, { r: 124, g: 77, b: 255 });
 
-  const blobs = Math.max(1, Math.min(4, Math.round(raw.background?.blobs ?? defaults.blobs)));
+  const blobs = Math.max(0, Math.min(4, Math.round(raw.background?.blobs ?? defaults.blobs)));
   const grain = clamp(raw.background?.grain ?? defaults.grain, 0, 0.3);
   const vignette = clamp(raw.background?.vignette ?? defaults.vignette, 0, 0.35);
   const gradientStrength = clamp(raw.background?.gradientStrength ?? defaults.gradientStrength, 0.8, 2.5);

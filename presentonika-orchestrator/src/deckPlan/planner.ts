@@ -101,9 +101,10 @@ export const buildPlannerPrompt = (request: CreatePlanRequest): string => {
     "Each slide item: slide, slideType, role, titleIntent, claim, mustInclude[], mustAvoid[], requiredItems[], expectedEvidence[], visualSuggestions[], relationToPrevious?, relationToNext?.",
     "slideType MUST be one of: cover, goals, hook, context, definition, bullets, comparison, twoCol, steps, timeline, examples, quiz, summary, visual_explanation.",
     "presentationType must be concrete. If request presentationType=auto, infer one of: historical_overview, overview, lesson, causes_consequences, biography_contribution, literary_analysis, law_formula, process, comparison.",
-    "Create a dynamic sequence for the topic. Do not force examples to slide 8, quiz to slide 9, or summary to slide 10; choose the order that best serves the lesson.",
-    "Normally start with cover/frame, put goals/route near the beginning, and place summary/conclusion near the end; include quiz/check near the end only when useful or requested.",
-    "Pedagogical sequence: context before mechanism, examples after context/mechanisms, quiz after core content, summary at the end or near the end. Timeline should not appear after quiz unless it is a recap timeline.",
+    "Create a dynamic sequence for the topic. Do not force examples to slide 8 or quiz to slide 9; choose the order that best serves the lesson.",
+    "Start with cover/frame, put goals/route near the beginning, and make summary/conclusion the final slide; include quiz/check near the end only when useful or requested.",
+    "Use exactly one summary/conclusion slide. If homework or sources need a separate slide, use slideType=bullets with role=application and place it before the final summary.",
+    "Pedagogical sequence: context before mechanism, examples after context/mechanisms, quiz after core content, summary strictly at the end. Timeline should not appear after quiz unless it is a recap timeline.",
     "Do not use null anywhere. If an optional value such as relationToPrevious/relationToNext is absent, omit the field.",
     "Omit createdAt. The server sets createdAt.",
     "titleIntent and claim must always be non-empty strings.",
@@ -171,7 +172,7 @@ export const evaluateDeckPlanSequence = (deckPlan: DeckPlan): { warnings: PlanDi
   const warnings: PlanDiagnosticWarning[] = [];
   const slides = [...deckPlan.slides].sort((a, b) => a.slide - b.slide);
   const routeSlide = slides.find((slide) => slide.slideType === "goals");
-  const summarySlides = slides.filter((slide) => slide.slideType === "summary");
+  const summarySlides = slides.filter((slide) => slide.slideType === "summary" && slide.role !== "homework_sources");
   const firstQuiz = slides.find((slide) => slide.slideType === "quiz");
   const firstQuizIndex = firstQuiz ? slides.findIndex((slide) => slide.slide === firstQuiz.slide) : -1;
   const coreTypes = new Set<DeckPlanSlideType>(["context", "definition", "bullets", "comparison", "twoCol", "steps", "timeline", "examples", "visual_explanation"]);
@@ -183,8 +184,8 @@ export const evaluateDeckPlanSequence = (deckPlan: DeckPlan): { warnings: PlanDi
     warnings.push({ code: "missing_summary_slide", severity: "warn", message: "DeckPlan has no summary/conclusion slide." });
   } else {
     const lastSummary = summarySlides[summarySlides.length - 1];
-    if (lastSummary.slide < Math.max(1, deckPlan.slideCount - 1)) {
-      warnings.push({ code: "summary_not_last_or_near_last", severity: "warn", slide: lastSummary.slide, message: "Summary/conclusion appears too early in the plan." });
+    if (lastSummary.slide !== deckPlan.slideCount) {
+      warnings.push({ code: "summary_not_last", severity: "warn", slide: lastSummary.slide, message: "Summary/conclusion must be the final slide in the plan." });
     }
   }
   if (firstQuiz && firstQuizIndex >= 0) {
@@ -384,7 +385,43 @@ const normalizeSlideRoleForUi = (params: {
   slideNo: number;
   normalization: PlannerNormalizationDiagnostics;
 }): string => {
-  if (params.slideType !== "summary") return params.role;
+  const canonicalRoles: Partial<Record<DeckPlanSlideType, string>> = {
+    cover: "frame",
+    goals: "route",
+    hook: "problem_hook",
+    context: "context",
+    definition: "evidence_mechanism",
+    bullets: "evidence_mechanism",
+    comparison: "comparison",
+    twoCol: "comparison",
+    steps: "development_over_time",
+    timeline: "development_over_time",
+    examples: "examples_as_evidence",
+    quiz: "check_understanding",
+    visual_explanation: "evidence_mechanism",
+  };
+  const reservedRoles = new Set([
+    "frame",
+    "route",
+    "problem_hook",
+    "context",
+    "evidence_mechanism",
+    "comparison",
+    "development_over_time",
+    "examples_as_evidence",
+    "check_understanding",
+    "conclusion",
+    "homework_sources",
+  ]);
+  if (params.slideType !== "summary") {
+    const canonicalRole = canonicalRoles[params.slideType];
+    if (canonicalRole && reservedRoles.has(params.role) && params.role !== canonicalRole) {
+      params.normalization.normalizedSlideRoles += 1;
+      params.normalization.warnings.unshift(`slide ${params.slideNo}: normalized incompatible ${params.role} role -> ${canonicalRole}`);
+      return canonicalRole;
+    }
+    return params.role;
+  }
   const text = `${params.role} ${params.titleIntent} ${params.claim}`.toLowerCase();
   if (/homework_sources|homework|sources|домаш|источник|дополнитель|закреп/.test(text) && !/homework_sources/.test(params.role)) {
     params.normalization.normalizedSlideRoles += 1;
@@ -524,7 +561,7 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
   });
 
   const slides = Array.isArray(withDefaults.slides) ? withDefaults.slides : [];
-  withDefaults.slides = slides.map((slideRaw: unknown, slideIndex: number) => {
+  const normalizedSlides = slides.map((slideRaw: unknown, slideIndex: number) => {
     const slide = { ...asRecord(slideRaw) };
     const slideNo = typeof slide.slide === "number" ? slide.slide : slideIndex + 1;
     const ru = String(withDefaults.language || "ru").toLowerCase().startsWith("ru");
@@ -721,6 +758,58 @@ export const normalizeLlmDeckPlanCandidate = (raw: unknown, request: CreatePlanR
     }
     normalization.warnings.push(`${warning.slide ? `slide ${warning.slide}: ` : ""}${warning.code}: ${warning.sample || warning.message}`);
   }
+
+  const typedSlides = normalizedSlides as DeckPlan["slides"];
+  const conclusionSummaryIndexes = typedSlides
+    .map((slide, index) => slide.slideType === "summary" && slide.role !== "homework_sources" ? index : -1)
+    .filter((index) => index >= 0);
+  const homeworkSummaryIndexes = typedSlides
+    .map((slide, index) => slide.slideType === "summary" && slide.role === "homework_sources" ? index : -1)
+    .filter((index) => index >= 0);
+
+  if (conclusionSummaryIndexes.length > 0 && homeworkSummaryIndexes.length > 0) {
+    for (const index of homeworkSummaryIndexes) {
+      const slide = typedSlides[index];
+      const itemCount = Math.max(2, Math.min(4, slide.mustInclude.length || 3));
+      slide.slideType = "bullets";
+      slide.role = "application";
+      slide.requiredItems = [{
+        slot: "bullets",
+        kind: "bullets",
+        count: itemCount,
+        exact: true,
+        description: String(withDefaults.language || "ru").toLowerCase().startsWith("ru")
+          ? "практические задания или источники для закрепления"
+          : "practical follow-up tasks or sources",
+      }];
+      normalization.normalizedSlideTypes += 1;
+      normalization.normalizedSlideRoles += 1;
+      normalization.warnings.unshift(`slide ${slide.slide}: normalized standalone homework summary -> bullets/application`);
+    }
+  }
+
+  let finalSummaryIndex = -1;
+  for (let index = typedSlides.length - 1; index >= 0; index -= 1) {
+    if (typedSlides[index].slideType === "summary" && typedSlides[index].role !== "homework_sources") {
+      finalSummaryIndex = index;
+      break;
+    }
+  }
+  if (finalSummaryIndex < 0) {
+    for (let index = typedSlides.length - 1; index >= 0; index -= 1) {
+      if (typedSlides[index].slideType === "summary") {
+        finalSummaryIndex = index;
+        break;
+      }
+    }
+  }
+  if (finalSummaryIndex >= 0 && finalSummaryIndex !== typedSlides.length - 1) {
+    const [summarySlide] = typedSlides.splice(finalSummaryIndex, 1);
+    typedSlides.push(summarySlide);
+    typedSlides.forEach((slide, index) => { slide.slide = index + 1; });
+    normalization.warnings.unshift(`slides: moved summary from ${finalSummaryIndex + 1} to final position`);
+  }
+  withDefaults.slides = typedSlides;
 
   normalization.applied = normalization.normalizedKindAliases > 0
     || normalization.movedVisualSuggestions > 0

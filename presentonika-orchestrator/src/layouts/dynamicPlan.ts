@@ -53,7 +53,60 @@ export type DynamicSlidePlanDiagnostics = {
 
 export const getDefaultSlotsForSlideType = (slideType: SlideType): string[] => defaultSlotsBySlideType[slideType] || ["title", "bullets"];
 
-export const buildDynamicSlidePlan = (deckPlan: DeckPlan): { rows: CompiledSlidePlanRow[]; diagnostics: DynamicSlidePlanDiagnostics } => {
+export const inferContentDensityFromFills = (
+  fills: Record<string, string>,
+  slideCount: number,
+): Record<number, "low" | "medium" | "high"> => {
+  const scores = new Map<number, number>();
+  for (const [key, value] of Object.entries(fills)) {
+    const match = key.match(/^s(\d+)_(.+)$/i);
+    if (!match || !value.trim()) continue;
+    const slide = Number.parseInt(match[1], 10);
+    const slot = match[2].toLowerCase();
+    const wordCount = value.trim().split(/\s+/u).filter(Boolean).length;
+    const explicitLines = value.split("\n").filter((line) => line.trim()).length;
+    const weight = slot === "title" ? 0.35 : slot === "sources" ? 0.2 : slot === "meta" ? 0.55 : 1;
+    scores.set(slide, (scores.get(slide) || 0) + wordCount * weight + Math.max(0, explicitLines - 1) * 1.5);
+  }
+  return Object.fromEntries(Array.from({ length: slideCount }, (_, index) => {
+    const slide = index + 1;
+    const score = scores.get(slide) || 0;
+    return [slide, score <= 34 ? "low" : score >= 72 ? "high" : "medium"];
+  }));
+};
+
+const baseDensityScore: Record<SlideType, number> = {
+  cover: 0,
+  goals: 1,
+  hook: 1,
+  context: 2,
+  definition: 2,
+  bullets: 3,
+  visual_explanation: 2,
+  comparison: 2,
+  twoCol: 2,
+  steps: 2,
+  timeline: 2,
+  examples: 3,
+  quiz: 2,
+  summary: 2,
+};
+
+const expectedContentDensity = (slide: DeckPlan["slides"][number]): "low" | "medium" | "high" => {
+  const requiredCount = slide.requiredItems.reduce((sum, item) => sum + item.count, 0);
+  const score = baseDensityScore[slide.slideType as SlideType]
+    + Math.min(2, requiredCount / 4)
+    + Math.min(1.5, slide.mustInclude.length / 3)
+    + Math.min(1.5, slide.claim.length / 180);
+  if (score < 2.8) return "low";
+  if (score >= 5.2) return "high";
+  return "medium";
+};
+
+export const buildDynamicSlidePlan = (
+  deckPlan: DeckPlan,
+  contentDensityBySlide: Record<number, "low" | "medium" | "high"> = {},
+): { rows: CompiledSlidePlanRow[]; diagnostics: DynamicSlidePlanDiagnostics } => {
   const fallbackSlotInferences: DynamicSlidePlanDiagnostics["fallbackSlotInferences"] = [];
   const unsupportedSlideTypes: string[] = [];
 
@@ -76,6 +129,7 @@ export const buildDynamicSlidePlan = (deckPlan: DeckPlan): { rows: CompiledSlide
         requiredItems: slide.requiredItems,
         expectedEvidence: slide.expectedEvidence,
         slotsNeeded,
+        contentDensity: contentDensityBySlide[slide.slide] || expectedContentDensity(slide),
       };
     });
 

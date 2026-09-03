@@ -7,6 +7,12 @@ const hashScore = (seed: string): number => {
   return Number.parseInt(hex, 16);
 };
 
+const densityRank = (value: "low" | "medium" | "high" | undefined): number => {
+  if (value === "low") return 0;
+  if (value === "high") return 2;
+  return 1;
+};
+
 export const selectLayoutForSlide = (params: {
   presentationId: number;
   themeId: string;
@@ -20,9 +26,16 @@ export const selectLayoutForSlide = (params: {
     return required.every((slotId) => slotIds.has(slotId));
   });
   if (compatible.length === 0) return null;
-  if (!params.variation) return compatible[0];
+  const targetDensity = densityRank(params.row.contentDensity);
+  const closestDistance = Math.min(...compatible.map((pack) => Math.abs(
+    densityRank(pack.manifest.constraints?.preferredTextDensity || pack.manifest.constraints?.maxTextDensity) - targetDensity,
+  )));
+  const densityCompatible = compatible.filter((pack) => Math.abs(
+    densityRank(pack.manifest.constraints?.preferredTextDensity || pack.manifest.constraints?.maxTextDensity) - targetDensity,
+  ) === closestDistance);
+  if (!params.variation) return densityCompatible[0];
 
-  const weighted = compatible.flatMap((pack) => Array(Math.max(1, pack.manifest.seedWeight || 1)).fill(pack));
+  const weighted = densityCompatible.flatMap((pack) => Array(Math.max(1, pack.manifest.seedWeight || 1)).fill(pack));
   let selected = weighted[0];
   let best = -1;
   for (let i = 0; i < weighted.length; i += 1) {

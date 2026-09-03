@@ -123,6 +123,9 @@ const stopWords = new Set([
 ]);
 
 const genericTitlePatterns = [
+  /представить\s+тему/i,
+  /заинтересовать\s+(?:класс|ученик|аудитор)/i,
+  /ввести\s+в\s+тему/i,
   /определение\s+и\s+термины/i,
   /ключевые\s+факты/i,
   /основные\s+понятия/i,
@@ -146,8 +149,8 @@ const weakLearningVerbs = [
 ];
 
 const largeBlockMinimumsBySlot: Record<string, { chars: number; bullets?: number; bulletWords?: number }> = {
-  goals: { chars: 90, bullets: 3, bulletWords: 6 },
-  plan: { chars: 80, bullets: 3, bulletWords: 5 },
+  goals: { chars: 90, bullets: 3, bulletWords: 4 },
+  plan: { chars: 80, bullets: 3, bulletWords: 4 },
   bullets: { chars: 130, bullets: 3, bulletWords: 8 },
   left_bullets: { chars: 70, bullets: 2, bulletWords: 5 },
   right_bullets: { chars: 70, bullets: 2, bulletWords: 5 },
@@ -171,6 +174,14 @@ const significanceHints = [
   "привело",
   "из-за",
   "благодаря",
+  "повыс",
+  "положил",
+  "ознамен",
+  "ускор",
+  "обеспеч",
+  "вызвал",
+  "удлин",
+  "подтвержд",
 ];
 
 const overclaimPatterns = [
@@ -262,7 +273,7 @@ const hasBareFactShape = (value: string): boolean => {
 const isCommaOnlyKeywords = (key: string, value: string): boolean => {
   if (!key.toLowerCase().includes("keywords")) return false;
   const parts = value.split(",").map((part) => compact(part)).filter(Boolean);
-  if (parts.length < 4) return false;
+  if (parts.length <= 5) return false;
   const withoutCommas = compact(value.replace(/,/g, " "));
   return !/[.!?;:]/.test(value) && words(withoutCommas).length <= parts.length + 2;
 };
@@ -492,6 +503,16 @@ const isHomeworkSourcesSlide = (slide: DeckPlanSlide): boolean => (
 
 const isAllowedRepeatedPurpose = (previous: DeckPlanSlide | undefined, current: DeckPlanSlide): boolean => {
   if (!previous) return false;
+  const evidenceTypes = new Set<DeckPlanSlide["slideType"]>(["definition", "bullets", "visual_explanation"]);
+  if (
+    normalize(previous.role) === "evidence mechanism"
+    && normalize(current.role) === "evidence mechanism"
+    && previous.slideType !== current.slideType
+    && evidenceTypes.has(previous.slideType)
+    && evidenceTypes.has(current.slideType)
+  ) {
+    return true;
+  }
   return previous.slideType === "summary"
     && current.slideType === "summary"
     && isConclusionSlide(previous)
@@ -894,14 +915,23 @@ export const runContentQa = (params: {
 
     const bulletLines = linesOf(value);
 
-    if (largeBlock?.bullets && bulletLines.length < largeBlock.bullets) {
+    const exactRequiredItem = deckPlanSlide?.requiredItems.find((item) => (
+      item.exact && slotForRequiredItem(item, deckPlanSlide) === slot
+    ));
+    const minimumBulletCount = largeBlock?.bullets
+      ? exactRequiredItem
+        ? Math.min(largeBlock.bullets, exactRequiredItem.count)
+        : largeBlock.bullets
+      : undefined;
+
+    if (minimumBulletCount && bulletLines.length < minimumBulletCount) {
       pushIssue(issues, {
         code: "too_few_bullets",
         severity: "warn",
         layer: "content",
         key,
         slide,
-        message: `Expected at least ${largeBlock.bullets} bullet lines.`,
+        message: `Expected at least ${minimumBulletCount} bullet lines.`,
         sample: value.slice(0, 120),
       });
     }
@@ -921,7 +951,10 @@ export const runContentQa = (params: {
       }
     }
 
-    const bareFact = bulletLines.find(hasBareFactShape);
+    const hasDedicatedHookMeaning = slot === "hook_fact"
+      && typeof slide === "number"
+      && Boolean(params.fills[`s${slide}_hook_why`]?.trim());
+    const bareFact = hasDedicatedHookMeaning ? undefined : bulletLines.find(hasBareFactShape);
     if (bareFact) {
       pushIssue(issues, {
         code: "bare_fact_without_meaning",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { runContentQa } from "../content/contentQa";
 import { buildDeterministicDeckPlan } from "../deckPlan";
-import { normalizeBulletLineFormatting } from "../templates/textPostprocess";
+import { normalizeBulletLineFormatting, normalizeDocumentBulletMarkers } from "../templates/textPostprocess";
 
 const buildPushkinPlan = () => buildDeterministicDeckPlan({
   topic: "Александр Пушкин",
@@ -129,6 +129,14 @@ export const runContentQaTests = (): void => {
   });
   assert.equal(goodTitleReport.issues.some((issue) => issue.code === "generic_title" && issue.key === "s4_title"), false);
 
+  const leakedIntentTitleReport = runContentQa({
+    fills: { s1_title: "Представить тему и заинтересовать класс" },
+    fillKeys: ["s1_title"],
+    topic: "Клеточное дыхание",
+    deckPlan,
+  });
+  assert.ok(leakedIntentTitleReport.issues.some((issue) => issue.code === "generic_title" && issue.key === "s1_title"));
+
   const cautiousReport = runContentQa({
     fills: {
       s5_bullets: "• Пушкин считается одной из ключевых фигур формирования современного литературного языка.\n• Он помог соединить живую речь и книжную традицию.\n• Его проза стала важным образцом исторического повествования.\n• Лирика показала точность простой речи.\n• Драматургия связала историю и конфликт личности.",
@@ -197,6 +205,7 @@ export const runContentQaTests = (): void => {
     deckPlan: termsDeckPlan,
   });
   assert.equal(commaTermsReport.issues.some((issue) => issue.code === "required_count_mismatch" && issue.key === "s4_keywords"), false);
+  assert.equal(commaTermsReport.issues.some((issue) => issue.code === "too_few_bullets" && issue.key === "s4_keywords"), false);
   assert.ok(commaTermsReport.score >= 80);
 
   const fiveTermsReport = runContentQa({
@@ -208,6 +217,34 @@ export const runContentQaTests = (): void => {
     deckPlan: termsDeckPlan,
   });
   assert.equal(fiveTermsReport.issues.some((issue) => issue.code === "required_count_mismatch" && issue.key === "s4_keywords"), false);
+  assert.equal(fiveTermsReport.issues.some((issue) => issue.code === "comma_only_keywords" && issue.key === "s4_keywords"), false);
+
+  const exactTwoBulletsPlan = {
+    ...termsDeckPlan,
+    slides: termsDeckPlan.slides.map((slide) => slide.slide === 9
+      ? { ...slide, slideType: "bullets" as const, role: "application", requiredItems: [{ slot: "bullets", kind: "bullets" as const, count: 2, exact: true }] }
+      : slide),
+  };
+  const exactTwoBulletsReport = runContentQa({
+    fills: {
+      s9_bullets: "• Нарисуйте схему вулкана и подпишите все основные части.\n• Найдите действующий вулкан России и опишите последствия извержения.",
+    },
+    fillKeys: ["s9_bullets"],
+    topic: "Вулканы",
+    deckPlan: exactTwoBulletsPlan,
+  });
+  assert.equal(exactTwoBulletsReport.issues.some((issue) => issue.code === "too_few_bullets" && issue.key === "s9_bullets"), false);
+
+  const hookFactWithMeaningReport = runContentQa({
+    fills: {
+      s3_hook_fact: "Около 1500 вулканов считаются активными.",
+      s3_hook_why: "Поэтому наблюдения помогают заранее снижать риск.",
+    },
+    fillKeys: ["s3_hook_fact", "s3_hook_why"],
+    topic: "Вулканы",
+    deckPlan: termsDeckPlan,
+  });
+  assert.equal(hookFactWithMeaningReport.issues.some((issue) => issue.code === "bare_fact_without_meaning" && issue.key === "s3_hook_fact"), false);
 
   const tooManyTermsReport = runContentQa({
     fills: {
@@ -261,6 +298,9 @@ export const runContentQaTests = (): void => {
   const double = normalizeBulletLineFormatting("• • A");
   assert.equal(double.value, "• A");
   assert.equal(double.changed, true);
+  const document = { slides: [{ elements: [{ type: "text", text: "• • Проверь себя" }, { type: "text", text: "Без изменений" }] }] };
+  assert.equal(normalizeDocumentBulletMarkers(document), 1);
+  assert.equal(document.slides[0].elements[0].text, "• Проверь себя");
   const tooFew = normalizeBulletLineFormatting("• A. • B.");
   assert.equal(tooFew.value.split("\n").length, 2);
 };

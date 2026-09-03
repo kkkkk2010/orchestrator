@@ -174,6 +174,19 @@ export const deckPlanSchema = z.object({
       });
     }
     seen.add(slide.slide);
+
+    for (const item of slide.requiredItems) {
+      const maxCount = slide.slideType === "quiz" && item.kind === "questions"
+        ? 3
+        : ((slide.slideType === "steps" || slide.slideType === "timeline") && item.kind === "steps" ? 4 : null);
+      if (maxCount !== null && item.count > maxCount) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["slides", slide.slide - 1, "requiredItems"],
+          message: `${slide.slideType} supports at most ${maxCount} ${item.kind} per slide`,
+        });
+      }
+    }
   }
 });
 

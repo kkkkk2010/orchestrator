@@ -2,12 +2,22 @@ import assert from "node:assert/strict";
 import { applyFillsByLocations, extractRemainingKeys, scanRemainingFillTokens } from "../templates/applyFills";
 import { applyTypographyStandards, generateLocalFallback, normalizeText, resolveThemeTypography } from "../templates/textPostprocess";
 import { buildImagePromptFallback } from "../images/imagePlan";
-import { enforceImagePromptUniqueness } from "../images/imagePrompts";
+import { applySlideTypeHeuristics, compressQuery, enforceImagePromptUniqueness, isGenericImageQuery } from "../images/imagePrompts";
 import { findMissingSkeletonKeys } from "../tools/templateQa";
 import type { PlaceholderLocation } from "../templates/applyFills";
 import type { ImagePlanSlot } from "../images/imagePlan";
 
 export const runQualityGateTests = (): void => {
+  {
+    const examples = normalizeText("s7_examples", [
+      "• Первый пример подтверждает тезис.",
+      "• Второй пример показывает следствие.",
+      "• Третий пример раскрывает механизм.",
+      "• Четвертый пример связывает факт и вывод.",
+    ].join("\n"));
+    assert.equal(examples.split("\n").length, 4);
+  }
+
   {
     const keys = extractRemainingKeys([
       { path: "slides[0].elements[0].text", snippet: "TEST_s5_title {{ s10_title }}" },
@@ -60,8 +70,8 @@ export const runQualityGateTests = (): void => {
     applyTypographyStandards({ doc, placeholderLocations: locations, themeTypography: typography });
     const style = (doc.slides[0].elements[0] as { style: Record<string, unknown> }).style;
     assert.equal(typography.scale, 1.35);
-    assert.equal(style.fontFamily, "Times New Roman");
-    assert.equal(Number(style.fontSize), 65);
+    assert.equal(style.fontFamily, "Manrope");
+    assert.equal(Number(style.fontSize), 76);
     if (previousScale === undefined) delete process.env.TYPOGRAPHY_SCALE;
     else process.env.TYPOGRAPHY_SCALE = previousScale;
   }
@@ -89,6 +99,32 @@ export const runQualityGateTests = (): void => {
     });
     assert.ok(!fallback.query.includes("slide"));
     assert.ok(fallback.query.includes("Инаугурация"));
+  }
+
+  {
+    const fallback = buildImagePromptFallback({
+      topic: "Клеточное дыхание",
+      slideTitle: "Проверка знаний",
+      slideSummary: "Ученик отвечает на вопросы про митохондрии, дыхание и АТФ",
+      kind: "hero",
+      language: "ru",
+    });
+    assert.match(fallback.query, /^ученик решает тест/i);
+    assert.match(fallback.query, /клеточное дыхание/i);
+    assert.match(fallback.query, /биология класс/i);
+    assert.doesNotMatch(fallback.query, /презентация|проверка знаний|слайд/i);
+    assert.doesNotMatch(fallback.query, /[A-Za-z]/);
+    assert.match(fallback.hint, /Ученик выполняет учебное задание/);
+  }
+
+  {
+    const compressed = compressQuery("Клеточное дыхание митохондрия АТФ научная схема", []);
+    assert.match(compressed.query, /Клеточное дыхание/);
+    assert.match(compressed.query, /АТФ/);
+    assert.equal(applySlideTypeHeuristics(compressed.query, "general", "hero"), compressed.query);
+    assert.equal(isGenericImageQuery("Презентация Проверка знаний фото"), true);
+    assert.equal(isGenericImageQuery("Важность развития современного общества иллюстрация"), true);
+    assert.equal(isGenericImageQuery(compressed.query), false);
   }
 
   {

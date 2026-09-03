@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
+  buildImagePromptFallback,
   buildImagePlanWithDiagnostics,
   detectPlaceholderImageElements,
+  isImagePromptLanguageCompatible,
 } from "../images/imagePlan";
 
 export const runImagePlanTests = (): void => {
@@ -102,4 +104,17 @@ export const runImagePlanTests = (): void => {
 
   assert.equal(dropped.imagePlan.slots.length, 0);
   assert.equal(dropped.diagnostics.droppedCount, 1);
+
+  assert.equal(isImagePromptLanguageCompatible("cellular respiration mitochondria", "ru"), false);
+  assert.equal(isImagePromptLanguageCompatible("клеточное дыхание митохондрия", "ru"), true);
+
+  const russianFallback = buildImagePromptFallback({
+    topic: "Cellular respiration",
+    slideTitle: "Клеточное дыхание и митохондрии",
+    slideSummary: "Энергия клетки и синтез АТФ",
+    kind: "photo",
+    language: "ru",
+  });
+  assert.match(russianFallback.query, /[А-Яа-яЁё]/);
+  assert.doesNotMatch(russianFallback.query, /[A-Za-z]/);
 };

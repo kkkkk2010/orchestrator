@@ -39,6 +39,7 @@ export type LayoutPackManifest = {
   imageSlots: LayoutImageSlot[];
   constraints?: {
     maxTextDensity?: "low" | "medium" | "high";
+    preferredTextDensity?: "low" | "medium" | "high";
     supportsLongBullets?: boolean;
     supportsNoImage?: boolean;
   };
@@ -60,6 +61,7 @@ export type SlidePlanRow = {
   claim?: string;
   titleIntent?: string;
   requiredSlotIds?: string[];
+  contentDensity?: "low" | "medium" | "high";
 };
 
 export type SelectedLayout = {
@@ -80,6 +82,10 @@ export type LayoutEngineDiagnostics = {
   compiledSlideTypes?: Array<{ slide: number; slideType: SlideType; role?: string; layoutSlideType?: SlideType }>;
   fallbackSlideTypeMappings?: Array<{ slide: number; requested: SlideType; resolved: SlideType; reason: string }>;
   fallbackSlotInferences?: Array<{ slide: number; slideType: SlideType; slots: string[] }>;
+  repeatGroupAdaptations?: Array<{ slide: number; group: "steps" | "questions"; requested: number; rendered: number }>;
+  postFillSelectionUsed?: boolean;
+  postFillLayoutChanges?: Array<{ slide: number; before: string; after: string }>;
+  actualContentDensity?: Record<number, "low" | "medium" | "high">;
   unsupportedSlideTypes?: string[];
   dynamicBindings?: Array<{ slide: number; slotName: string; fillKey: string }>;
   missingSlotBindings?: string[];

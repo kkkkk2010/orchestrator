@@ -1,7 +1,30 @@
 services:
+  loki:
+    image: grafana/loki:3.7.0
+    command: ["-config.file=/etc/loki/local-config.yml"]
+    restart: unless-stopped
+    volumes:
+      - ./ops/loki-config.yml:/etc/loki/local-config.yml:ro
+      - loki_data:/loki
+    healthcheck:
+      test: ["CMD", "/usr/bin/loki", "-version"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - orchestrator_internal
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1.0
+
   redis:
     image: redis:7-alpine
     user: redis
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "448mb", "--maxmemory-policy", "noeviction"]
     restart: unless-stopped
     volumes:
       - redis_data:/data
@@ -31,6 +54,8 @@ services:
       REDIS_URL: redis://redis:6379
       QUEUE_NAME: ${QUEUE_NAME:-presentonika_jobs}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOKI_PUSH_URL: http://loki:3100/loki/api/v1/push
+      QUEUE_AGE_ALERT_MS: ${QUEUE_AGE_ALERT_MS:-300000}
       PRESENTONIKA_ORCHESTRATOR_KEY: ${PRESENTONIKA_ORCHESTRATOR_KEY:?PRESENTONIKA_ORCHESTRATOR_KEY is required}
       TRUST_PROXY: ${TRUST_PROXY:-true}
       REQUIRE_WORKER_READY: ${REQUIRE_WORKER_READY:-true}
@@ -40,6 +65,10 @@ services:
       CLEANUP_INTERVAL_SECONDS: ${CLEANUP_INTERVAL_SECONDS:-600}
       JOBS_RATE_LIMIT_MAX: ${JOBS_RATE_LIMIT_MAX:-30}
       JOBS_RATE_LIMIT_WINDOW_SECONDS: ${JOBS_RATE_LIMIT_WINDOW_SECONDS:-300}
+      PLANS_RATE_LIMIT_MAX: ${PLANS_RATE_LIMIT_MAX:-20}
+      PLANS_RATE_LIMIT_WINDOW_SECONDS: ${PLANS_RATE_LIMIT_WINDOW_SECONDS:-300}
+      PLANS_CONCURRENCY_MAX: ${PLANS_CONCURRENCY_MAX:-2}
+      PLANS_SLOT_TTL_SECONDS: ${PLANS_SLOT_TTL_SECONDS:-90}
       ENABLE_MOCK_WP: ${ENABLE_MOCK_WP:-false}
       PLAN_GENERATION_ENABLED: ${PLAN_GENERATION_ENABLED:-true}
       PLAN_LLM_ENABLED: ${PLAN_LLM_ENABLED:-false}
@@ -62,6 +91,8 @@ services:
       LAYOUT_DEBUG_LABEL: ${LAYOUT_DEBUG_LABEL:-true}
     depends_on:
       redis:
+        condition: service_healthy
+      loki:
         condition: service_healthy
     ports:
       - "127.0.0.1:8080:8080"
@@ -101,7 +132,11 @@ services:
       REDIS_URL: redis://redis:6379
       QUEUE_NAME: ${QUEUE_NAME:-presentonika_jobs}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOKI_PUSH_URL: http://loki:3100/loki/api/v1/push
+      QUEUE_AGE_ALERT_MS: ${QUEUE_AGE_ALERT_MS:-300000}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      USER_CONCURRENCY_MAX: ${USER_CONCURRENCY_MAX:-1}
+      USER_SLOT_TTL_SECONDS: ${USER_SLOT_TTL_SECONDS:-7200}
       PUBLIC_ZIP_BASE_URL: ${PUBLIC_ZIP_BASE_URL:?PUBLIC_ZIP_BASE_URL is required}
       THEMES_DIR: /app/themes
       STAGED_DIR: ${STAGED_DIR:-.staged}
@@ -153,11 +188,15 @@ services:
       IMAGEPLAN_AUTO_DETECT: ${IMAGEPLAN_AUTO_DETECT:-true}
       IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR: ${IMAGEPLAN_DETECT_FALLBACK_ALL_NON_DECOR:-true}
       BACKGROUND_GEN_TIMEOUT_MS: ${BACKGROUND_GEN_TIMEOUT_MS:-20000}
-      FONT_FAMILY_DEFAULT: Times New Roman
+      FONT_FAMILY_DEFAULT: Inter
+      FONT_FAMILY_DISPLAY: Manrope
       TYPOGRAPHY_SCALE: "1"
       TYPOGRAPHY_USE_THEME_SIZES: "true"
-      TEXT_FIT_TRUNCATE: "false"
+      TEXT_FIT_SHORTEN: ${TEXT_FIT_SHORTEN:-false}
       FAIL_ON_REMAINING_TOKENS: ${FAIL_ON_REMAINING_TOKENS:-true}
+      CONTENT_REPAIR_ENABLED: ${CONTENT_REPAIR_ENABLED:-true}
+      CONTENT_REPAIR_SCORE_THRESHOLD: ${CONTENT_REPAIR_SCORE_THRESHOLD:-95}
+      CONTENT_REPAIR_MAX_KEYS: ${CONTENT_REPAIR_MAX_KEYS:-8}
       LAYOUT_ENGINE_ENABLED: "true"
       LAYOUT_ENGINE_DIR: /app/layouts-local
       LAYOUT_ENGINE_FAIL_ON_MISSING_LAYOUT: "false"
@@ -167,6 +206,8 @@ services:
       WORKER_HEARTBEAT_TTL_SECONDS: ${WORKER_HEARTBEAT_TTL_SECONDS:-30}
     depends_on:
       redis:
+        condition: service_healthy
+      loki:
         condition: service_healthy
     volumes:
       - ./out:/app/out
@@ -192,6 +233,7 @@ services:
 
 volumes:
   redis_data:
+  loki_data:
 
 networks:
   orchestrator_internal:

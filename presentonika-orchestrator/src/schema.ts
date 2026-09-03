@@ -17,6 +17,7 @@ const saveEndpointSchema = z.string().min(1).url().superRefine((value, context) 
 export const createJobSchema = z.object({
   presentationId: z.number().int().positive(),
   userId: z.number().int().positive(),
+  requestId: z.string().trim().min(8).max(96).regex(/^[a-zA-Z0-9._:-]+$/).optional(),
   topic: z.string().trim().min(1).max(500),
   themeId: z.string().trim().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/),
   language: z.string().optional(),

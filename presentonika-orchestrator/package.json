@@ -23,8 +23,12 @@
     "tools:build": "tsc -p tsconfig.json",
     "template:generate:node": "npm run tools:build && node dist/tools/templateGenerate.js",
     "layout:validate": "tsx src/layouts/validate.ts",
+    "layout:validate:all": "tsx src/layouts/validate.ts --all",
     "layout:inspect": "tsx src/layouts/inspect.ts",
     "layout:import": "tsx src/layouts/importLayout.ts",
+    "layout:build:gamma": "tsx src/tools/buildGammaLayouts.ts",
+    "jobs:recover": "tsx src/tools/recoverJobs.ts",
+    "load:smoke": "tsx src/tools/loadSmoke.ts",
     "layout:validate:node": "npm run tools:build && node dist/layouts/validate.js",
     "layout:inspect:node": "npm run tools:build && node dist/layouts/inspect.js",
     "layout:import:node": "npm run tools:build && node dist/layouts/importLayout.js"
@@ -34,6 +38,7 @@
     "bullmq": "^5.12.7",
     "dotenv": "^16.4.5",
     "fastify": "5.10.0",
+    "fontkit": "^2.0.4",
     "ioredis": "^5.4.1",
     "openai": "^4.57.0",
     "pino": "^9.3.2",
@@ -43,6 +48,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/fontkit": "^2.0.8",
     "@types/node": "^22.5.4",
     "@types/pngjs": "^6.0.5",
     "@types/yauzl": "^2.10.3",

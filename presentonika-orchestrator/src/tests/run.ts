@@ -21,13 +21,23 @@ import { runNarrativePlanTests } from "./narrativePlan.test";
 import { runDeckPlanTests } from "./deckPlan.test";
 import { runThemeQaTests } from "./themeQa.test";
 import { runSchemaTests } from "./schema.test";
+import { runContentRepairTests } from "./contentRepair.test";
+import { runContentAwareLayoutTests } from "./contentAwareLayout.test";
+import { runLayoutVisualRegressionTests } from "./layoutVisualRegression.test";
+import { runObservabilityTests } from "./observability.test";
+import { runP1RegressionCorpusTests } from "./p1RegressionCorpus.test";
 
 const run = async (): Promise<void> => {
   runPlaceholderTests();
   runThemeStoreTests();
   runThemeQaTests();
   runSchemaTests();
+  runObservabilityTests();
+  runP1RegressionCorpusTests();
   runContentQaTests();
+  runContentRepairTests();
+  runContentAwareLayoutTests();
+  await runLayoutVisualRegressionTests();
   runNarrativePlanTests();
   await runDeckPlanTests();
   runImagePlanTests();

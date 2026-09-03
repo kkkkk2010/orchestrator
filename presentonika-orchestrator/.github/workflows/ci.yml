@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+      - run: npm ci
+      - run: npm run audit:production
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run layout:validate:all
+      - name: Validate compose
+        env:
+          PRESENTONIKA_ORCHESTRATOR_KEY: ci-placeholder
+          PUBLIC_ZIP_BASE_URL: https://editor.presentonika.ru/orchestrator/staged
+        run: docker compose config --quiet
+      - name: Reject private build artifacts
+        run: |
+          test -z "$(find . -path ./node_modules -prune -o -type f \( -name '*.sql' -o -name '*.dump' -o -name '*.bak' -o -name '*.backup' -o -name '*.before-*' \) -print -quit)"
+      - run: docker build .

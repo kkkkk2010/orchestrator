@@ -3,9 +3,21 @@ import type { LLMGenerateInput } from "./LLMClient";
 export const buildSystemPrompt = (mode: LLMGenerateInput["mode"] = "fills"): string => {
   if (mode === "image_prompts") {
     return [
-      "Ты редактор поисковых image-prompts для презентаций.",
+      "Ты фоторедактор, который составляет запросы для поиска реальных изображений в Яндексе.",
       "Верни только JSON: { imagePlanPatch: { slots: [{slotId, query, hint, styleHint?, negative?}] } }.",
+      "query — короткая поисковая фраза, hint — понятное человеку описание желаемого кадра.",
       "Без текста вне JSON.",
+    ].join(" ");
+  }
+
+  if (mode === "content_repair") {
+    return [
+      "Ты методист-редактор учебной презентации.",
+      "Улучши связность, содержательность и соответствие DeckPlan только в переданных полях.",
+      "Не добавляй новые неподтвержденные факты и не переписывай поля вне списка.",
+      "Сохрани требуемые списки, количество пунктов и формат строк.",
+      "Верни только JSON строго вида { fills: {key:value} } со всеми и только перечисленными ключами.",
+      "Никакого текста вне JSON.",
     ].join(" ");
   }
 
@@ -34,53 +46,53 @@ const buildRagContext = (input: LLMGenerateInput): string => {
 const keyRule = (key: string): string => {
   const normalized = key.toLowerCase();
   const slot = normalized.match(/^s\d+_(.+)$/)?.[1] || normalized;
-  if (normalized === "s1_title") return "название темы, <=5 слов";
+  if (normalized === "s1_title") return "конкретное название темы, <=5 слов; не копируй titleIntent и не пиши действие вроде 'представить тему'";
   if (normalized === "s1_subtitle") return "сильный подзаголовок, <=7 слов, не повторяй title";
-  if (normalized === "s1_meta") return "1 смысловая рамка темы: что изучаем и почему это важно, 16-24 слова";
+  if (normalized === "s1_meta") return "1 смысловая рамка темы: что изучаем и почему это важно, 14-20 слов";
   if (normalized === "s2_title") return "заголовок целей, <=5 слов";
-  if (normalized === "s2_goals") return "ровно 3 учебные цели, каждая строка с •; не обещай разбор конкретных произведений/глав, если deck дальше их не раскрывает";
-  if (normalized === "s2_plan") return "ровно 3 пункта плана урока, каждая строка с •, без нумерации; план должен совпадать со структурой 10 слайдов";
+  if (normalized === "s2_goals") return "ровно 3 учебные цели, каждая строка с • и <=14 слов; не обещай разбор конкретных произведений/глав, если deck дальше их не раскрывает";
+  if (normalized === "s2_plan") return "ровно 3 пункта плана урока, каждая строка с • и <=14 слов, без нумерации; план должен совпадать со структурой 10 слайдов";
   if (normalized === "s3_title") return "цепляющий заголовок, <=7 слов";
-  if (normalized === "s3_hook_question") return "1 интригующий вопрос";
-  if (normalized === "s3_hook_hint") return "1 короткая подсказка/ответ";
-  if (normalized === "s3_hook_fact") return "1 точный факт с датой/масштабом";
-  if (normalized === "s3_hook_why") return "1 фраза почему это важно";
-  if (normalized === "s4_title") return "смысловой заголовок роли/контекста, <=5 слов; избегай 'Определение и термины'";
-  if (normalized === "s4_definition") return "объясни роль, значение или контекст темы, 24-38 слов; для человека не пиши как словарную статью";
+  if (normalized === "s3_hook_question") return "1 интригующий вопрос, <=14 слов";
+  if (normalized === "s3_hook_hint") return "1 короткая подсказка/ответ, <=10 слов";
+  if (normalized === "s3_hook_fact") return "1 точный факт с датой/масштабом, <=12 слов";
+  if (normalized === "s3_hook_why") return "1 фраза почему это важно, <=12 слов";
+  if (normalized === "s4_title") return "смысловой заголовок роли/контекста, <=5 слов; запрещены 'Что такое...', 'Определение и термины' и другие словарные заголовки";
+  if (normalized === "s4_definition") return "объясни роль, значение или контекст темы, 24-34 слова; для человека не пиши как словарную статью";
   if (normalized === "s4_keywords") return "4-5 компактных термина по центральной линии; каждый термин <=3 слов, без длинных определений и мини-словарика";
   if (normalized === "s5_title") return "заголовок смысловых фактов, <=5 слов; избегай 'Ключевые факты'";
-  if (normalized === "s5_bullets") return "ровно 5 пунктов, каждая строка с •; факт + значение, 12-22 слова; избегай абсолютов вроде первый/создал/основоположник, пиши осторожно: считается, во многом, сыграл роль";
+  if (normalized === "s5_bullets") return "ровно 5 пунктов, каждая строка с •; факт + значение, 10-16 слов; избегай абсолютов вроде первый/создал/основоположник, пиши осторожно: считается, во многом, сыграл роль";
   if (normalized === "s6_title") return "заголовок сравнения, <=5 слов";
   if (normalized.includes("left_title")) return "название левой колонки, <=4 слов";
   if (normalized.includes("right_title")) return "название правой колонки, <=4 слов";
-  if (normalized.includes("left_bullets") || normalized.includes("right_bullets")) return "ровно 3 пункта колонки, каждая строка с •";
+  if (normalized.includes("left_bullets") || normalized.includes("right_bullets")) return "ровно 3 пункта колонки, каждая строка с • и <=14 слов";
   if (normalized === "s7_title") return "заголовок этапов, <=5 слов";
-  if (/s7_step\d+/.test(normalized)) return "1 этап: период + событие + значение, <=18 слов; не давай грубую датировку произведений, если точный диапазон сложнее";
+  if (/s7_step\d+/.test(normalized)) return "1 этап: период + событие + значение, <=14 слов; не давай грубую датировку произведений, если точный диапазон сложнее";
   if (normalized === "s8_title") return "заголовок примеров, <=5 слов";
-  if (normalized === "s8_examples") return "ровно 4 конкретных примера, каждая строка с •; произведение/пример + как он доказывает thesis, не просто список";
+  if (normalized === "s8_examples") return "ровно 4 конкретных примера, каждая строка с • и <=16 слов; произведение/пример + как он доказывает thesis, не просто список";
   if (normalized === "s9_title") return "заголовок проверки, <=5 слов";
-  if (normalized === "s9_task") return "короткая инструкция к заданию";
-  if (/s9_q\d+/.test(normalized)) return "1 проверочный вопрос по теме";
+  if (normalized === "s9_task") return "короткая инструкция к заданию, <=12 слов";
+  if (/s9_q\d+/.test(normalized)) return "1 проверочный вопрос по теме, <=14 слов";
   if (normalized === "s10_title") return "заголовок итога, <=5 слов";
-  if (normalized === "s10_summary") return "ровно 3 вывода, каждая строка с •; ответь на centralQuestion осторожно, без абсолютов создал/первый/навсегда";
-  if (normalized === "s10_homework") return "1 домашнее задание, практическое";
+  if (normalized === "s10_summary") return "ровно 3 вывода, каждая строка с • и <=16 слов; ответь на centralQuestion осторожно, без абсолютов создал/первый/навсегда";
+  if (normalized === "s10_homework") return "1 домашнее задание, практическое, <=14 слов";
   if (normalized === "s10_sources") return "1 строка источников";
   if (slot === "title") return "заголовок слайда, <=7 слов";
   if (slot === "subtitle") return "подзаголовок, <=12 слов";
-  if (slot === "meta") return "1 смысловая рамка темы: что изучаем и почему это важно, 16-24 слова";
-  if (slot === "goals") return "учебные цели, каждая строка с •; используй сильные глаголы: объяснить, сравнить, доказать, связать";
-  if (slot === "plan") return "маршрут урока, каждая строка с •, без нумерации; план должен совпадать с DeckPlan";
-  if (slot === "bullets") return "пункты, каждая строка с •; факт + значение, избегай абсолютов";
-  if (slot === "examples") return "конкретные примеры, каждая строка с •; пример + как он доказывает тезис, не просто список";
-  if (slot === "questions") return "вопросы на понимание, каждая строка с •; проверяй причинно-следственные связи, а не только память";
-  if (/^q\d+$/.test(slot)) return "1 вопрос на понимание центральной линии, не только дата/имя";
-  if (slot === "summary") return "выводы, каждая строка с •; ответь на centralQuestion осторожно, без абсолютов";
-  if (slot === "homework") return "1 домашнее задание, практическое";
+  if (slot === "meta") return "1 смысловая рамка темы: что изучаем и почему это важно, 14-20 слов";
+  if (slot === "goals") return "учебные цели, каждая строка с • и <=14 слов; используй сильные глаголы: объяснить, сравнить, доказать, связать";
+  if (slot === "plan") return "маршрут урока, каждая строка с • и <=14 слов, без нумерации; план должен совпадать с DeckPlan";
+  if (slot === "bullets") return "пункты, каждая строка с • и <=16 слов; факт + значение, избегай абсолютов";
+  if (slot === "examples") return "конкретные примеры, каждая строка с • и <=16 слов; пример + как он доказывает тезис, не просто список";
+  if (slot === "questions") return "вопросы на понимание, каждая строка с • и <=14 слов; проверяй причинно-следственные связи, а не только память";
+  if (/^q\d+$/.test(slot)) return "1 вопрос на понимание центральной линии, <=14 слов; начинай с Почему/Как/Объясните/Свяжите, требуй причинную связь, не изолированный факт";
+  if (slot === "summary") return "выводы, каждая строка с • и <=16 слов; ответь на centralQuestion осторожно, без абсолютов";
+  if (slot === "homework") return "1 домашнее задание, практическое, <=14 слов";
   if (slot === "sources") return "1 строка источников";
-  if (/^step\d+$/.test(slot) || slot === "steps") return "этап: период/шаг + событие + значение; не давай грубую датировку, если не уверен";
-  if (slot === "left_bullets" || slot === "right_bullets") return "пункты колонки, каждая строка с •";
+  if (/^step\d+$/.test(slot) || slot === "steps") return "этап: период/шаг + событие + значение, <=14 слов; не давай грубую датировку, если не уверен";
+  if (slot === "left_bullets" || slot === "right_bullets") return "пункты колонки, каждая строка с • и <=14 слов";
   if (slot === "left_title" || slot === "right_title") return "название колонки, <=4 слов";
-  if (slot === "definition") return "объясни роль, значение или контекст темы, не словарной статьей";
+  if (slot === "definition") return "объясни роль, значение или контекст темы, не словарной статьей; 32-48 слов суммарно, а если DeckPlan требует список, каждая строка <=16 слов";
   if (slot === "keywords") return "4-5 компактных термина по центральной линии; без длинных определений";
   if (normalized.includes("title")) return "<=7 слов";
   if (normalized.includes("subtitle")) return "<=12 слов";
@@ -216,10 +228,13 @@ const deterministicDeckContext = (input: LLMGenerateInput): string => {
     currentPlan ? `current batch narrative relation:\n${currentPlan}` : "",
     rows ? `Selected layouts: ${rows}` : "",
     "Use the selected slide role and text density when filling blocks. Bigger text blocks need explanation, not 2-3 dry fragments.",
+    "DeckPlan titleIntent and role are internal instructions. Never copy or paraphrase them as a visible title; visible titles must name the actual topic, concept, conflict, comparison, or result.",
     "For each factual bullet prefer: fact + meaning/consequence. If exact numbers are uncertain, do not invent precise quantities.",
     "Factual caution: avoid overclaims such as первый, создал современный язык, основоположник, перевернул язык, определил навсегда. Prefer: считается одной из ключевых фигур, во многом закрепил, помог соединить, сыграл центральную роль, подготовил почву.",
     "Exact counts are mandatory from DeckPlan for the actual dynamic keys in this batch.",
     "For bullet-like keys (goals, plan, bullets, examples, questions, steps, summary): every item must be on its own line, every item must start with \"• \", never put multiple bullet markers on one line.",
+    "Respect every word limit literally. Do not compensate for a short block by making another block longer; text must fit at presentation size without font shrinking.",
+    "Never use ellipses or unfinished phrases. Every shortened statement must remain grammatically complete.",
     "Keep keywords compact: 4-5 short terms only, tied to the narrative; no long glossary definitions.",
     "For chronology, use known ranges or avoid precise dating when unsure; do not compress complex work periods into misleading decades.",
     "Avoid generic headings: Определение и термины; Ключевые факты; Основные понятия; <topic>: определение.",
@@ -243,11 +258,15 @@ const buildImagePromptsUserPrompt = (input: LLMGenerateInput): string => {
     `themeId: ${input.themeId}`,
     `language: ${input.language || "ru"}`,
     "Верни mapping slotId -> {query,hint} в imagePlanPatch.slots.",
-    "query MUST include >=1 entity или keyword и быть уникальным среди слотов после нормализации.",
-    "query<=90, hint<=140, без кавычек, без двоеточий.",
-    "Запрещены повторы слов и повтор topic topic.",
-    "Фраза официальное фото без уточнения запрещена: нужен entity/year/place/event.",
-    "negative обязательно: [\"watermark\",\"nsfw\",\"lowres\",\"logo\",\"text\"]",
+    "Язык query и hint обязан совпадать с language презентации. При language=ru используй только русский язык и кириллицу.",
+    "query — естественный запрос для поиска картинок в Яндексе из 5-9 слов: видимый объект или человек + действие/процесс + конкретный контекст + подходящий тип изображения.",
+    "Не пересказывай заголовок слайда. Запрещены служебные слова: презентация, слайд, проверка знаний, итоги, главное, тема урока.",
+    "Не пиши абстракции вроде успех, развитие, важность. Каждый query должен описывать то, что реально можно увидеть в кадре.",
+    "Для невидимых научных процессов выбирай микрофотографию, научную схему или научную иллюстрацию; для людей и событий — документальную фотографию; для задания — конкретную сцену с учеником.",
+    "Не добавляй рекламные слова красивый, качественный, 4K, premium и не пиши длинный промпт для генератора изображений.",
+    "query MUST include минимум одну конкретную сущность или keyword и быть уникальным среди слотов. query<=90, hint<=140.",
+    "Пример для русского учебного слайда: query=ученик решает тест клеточное дыхание биология класс; hint=Ученик выполняет тест по биологии, рядом учебная модель клетки.",
+    "negative обязательно: [\"watermark\",\"nsfw\",\"lowres\",\"logo\",\"text\",\"clipart\",\"мем\",\"скриншот\",\"презентация\",\"реферат\"]",
     `slots: ${slots.join("; ")}`,
   ].join("\n");
 };
@@ -263,7 +282,7 @@ export const buildUserPrompt = (input: LLMGenerateInput): string => {
     return `${key}: ${[keyRule(key), deckRule].filter(Boolean).join(" | ")}`;
   });
 
-  return [
+  const basePrompt = [
     buildRagContext(input),
     `topic: ${input.topic || "презентация"}`,
     `language: ${input.language || "ru"}`,
@@ -273,5 +292,23 @@ export const buildUserPrompt = (input: LLMGenerateInput): string => {
     "Не смешивай несколько пунктов в одной строке. Не используй нумерацию внутри строк.",
     `keys: ${keysWithRules.join("; ")}`,
     "fills ДОЛЖЕН содержать ВСЕ перечисленные keys и ТОЛЬКО перечисленные keys.",
-  ].filter((line) => line.trim().length > 0).join("\n");
+  ].filter((line) => line.trim().length > 0);
+
+  if (mode === "content_repair" && input.repairContext) {
+    const currentFills = input.fillKeys.map((key) => `${key}: ${input.repairContext?.currentFills[key] || ""}`);
+    const issues = input.repairContext.issues.map((issue) => (
+      `${issue.code}${issue.slide ? ` slide=${issue.slide}` : ""}${issue.key ? ` key=${issue.key}` : ""}: ${issue.message}`
+    ));
+    basePrompt.push(
+      `QA issues:\n${issues.join("\n")}`,
+      `Текущие значения для точечной правки:\n${currentFills.join("\n")}`,
+      "Исправь только перечисленные проблемы. Сохрани удачные формулировки и не дублируй центральный тезис без нового шага аргумента.",
+      "Поле с generic_title замени полностью: не начинай с «Что такое», «Представить тему», «Ввести в тему» и не копируй titleIntent.",
+      "При quiz_not_testing_central_argument перепиши каждый переданный q-пункт как вопрос на причинную связь: Почему/Как/Объясните/Свяжите. Не оставляй вопросы только на место, термин или число.",
+      "Для примеров явно покажи доказательную связь минимум в половине строк словами «это показывает», «это подтверждает» или равнозначной причинной формулировкой.",
+      "Для датированного факта добавь его последствие или значение; абсолютное утверждение замени точной академической формулировкой без преувеличения.",
+    );
+  }
+
+  return basePrompt.join("\n");
 };

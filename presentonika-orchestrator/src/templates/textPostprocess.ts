@@ -1,4 +1,5 @@
 import type { PlaceholderLocation } from "./applyFills";
+import { measureTextBlock, type TextMetricStyle } from "../layouts/textMetrics";
 
 export type StyleRole = "title" | "subtitle" | "body" | "small" | "muted" | "bullets";
 type ThemeMode = "dark" | "light";
@@ -7,6 +8,7 @@ type TextKind = "title" | "bullets" | "body";
 
 export type TypographyConfig = {
   fontFamily: string;
+  displayFontFamily: string;
   scale: number;
   sizes: Record<StyleRole, number>;
   lineHeights: Record<StyleRole, number>;
@@ -28,6 +30,9 @@ export type TextFitItem = {
   finalFontSize: number;
   textLen: number;
   maxCharsEst: number;
+  requiredLines: number;
+  maxLines: number;
+  overflowAfterFit: boolean;
   wasShrunk: boolean;
   wasTruncated: boolean;
 };
@@ -56,12 +61,6 @@ const readThemeMode = (theme: unknown): ThemeMode | null => {
   return mode === "dark" || mode === "light" ? mode : null;
 };
 
-const clip = (value: string, max: number): string => {
-  if (value.length <= max) return value;
-  const safe = Math.max(1, max - 1);
-  return `${value.slice(0, safe)}…`;
-};
-
 const parseTypographyScale = (): number => {
   const raw = Number.parseFloat(process.env.TYPOGRAPHY_SCALE || "1");
   if (!Number.isFinite(raw) || raw <= 0) return 1;
@@ -77,6 +76,9 @@ const guessKind = (key: string): TextKind => {
 
 export const styleRoleByKey = (key: string): StyleRole => {
   const normalized = key.toLowerCase();
+  if (/(?:_left_title|_right_title)$/.test(normalized)) return "subtitle";
+  if (/(?:_hook_question)$/.test(normalized)) return "subtitle";
+  if (/(?:_hook_hint|_hook_fact|_hook_why|_q\d+|_step\d+|_homework)$/.test(normalized)) return "small";
   if (/(^|_)(title|header)$/.test(normalized) || /^s\d+_title$/.test(normalized)) return "title";
   if (normalized.endsWith("_subtitle") || normalized.includes("subtitle")) return "subtitle";
   if (normalized.endsWith("_meta") || normalized.endsWith("_sources") || normalized.includes("sources")) return "muted";
@@ -139,23 +141,25 @@ const defaultTypography = (themeId: string, themeMode: ThemeMode | null): Typogr
 
   if (mode === "dark") {
     return {
-      fontFamily: "Times New Roman",
+      fontFamily: "Inter",
+      displayFontFamily: "Manrope",
       scale: parseTypographyScale(),
-      sizes: { title: 48, subtitle: 30, body: 24, small: 16, muted: 16, bullets: 22 },
-      lineHeights: { title: 1.06, subtitle: 1.12, body: 1.22, small: 1.15, muted: 1.15, bullets: 1.18 },
-      colors: { title: "#FFFFFF", body: "#F2F2F2", muted: "#CFCFCF" },
+      sizes: { title: 56, subtitle: 30, body: 23, small: 18, muted: 16, bullets: 21 },
+      lineHeights: { title: 1.04, subtitle: 1.12, body: 1.26, small: 1.24, muted: 1.2, bullets: 1.26 },
+      colors: { title: "#F7F8FA", body: "#E4E8ED", muted: "#A8B0BA" },
       mode: "dark",
     };
   }
 
   return {
-    fontFamily: "Times New Roman",
+    fontFamily: "Inter",
+    displayFontFamily: "Manrope",
     scale: parseTypographyScale(),
-    sizes: { title: 48, subtitle: 30, body: 24, small: 16, muted: 16, bullets: 22 },
-    lineHeights: { title: 1.06, subtitle: 1.12, body: 1.22, small: 1.15, muted: 1.15, bullets: 1.18 },
+    sizes: { title: 56, subtitle: 30, body: 23, small: 18, muted: 16, bullets: 21 },
+    lineHeights: { title: 1.04, subtitle: 1.12, body: 1.26, small: 1.24, muted: 1.2, bullets: 1.26 },
     colors: themeMode === "light" || normalized.includes("light")
-      ? { title: "#111111", body: "#222222", muted: "#555555" }
-      : { title: "#111111", body: "#111111", muted: "#444444" },
+      ? { title: "#18202A", body: "#2C3540", muted: "#66717E" }
+      : { title: "#17242B", body: "#293A42", muted: "#5F6E76" },
     mode: "light",
   };
 };
@@ -168,8 +172,11 @@ export const resolveThemeTypography = (themeId: string, theme: unknown): Typogra
   const colors = toRecord(typography?.colors);
   const useThemeSizes = process.env.TYPOGRAPHY_USE_THEME_SIZES === "true";
   const envFontFamily = process.env.FONT_FAMILY_DEFAULT?.trim() ?? "";
+  const envDisplayFontFamily = process.env.FONT_FAMILY_DISPLAY?.trim() ?? "";
   const themeFontFamily = typeof typography?.fontFamily === "string" ? typography.fontFamily.trim() : "";
-  const fontFamily = envFontFamily || themeFontFamily || "Times New Roman";
+  const themeDisplayFontFamily = typeof typography?.displayFontFamily === "string" ? typography.displayFontFamily.trim() : "";
+  const fontFamily = envFontFamily || themeFontFamily || "Inter";
+  const displayFontFamily = envDisplayFontFamily || themeDisplayFontFamily || "Manrope";
 
   const readSize = (role: StyleRole, fallbackRole: StyleRole = role): number => {
     if (!useThemeSizes) return base.sizes[role];
@@ -187,6 +194,7 @@ export const resolveThemeTypography = (themeId: string, theme: unknown): Typogra
     ...base,
     scale,
     fontFamily,
+    displayFontFamily,
     sizes: {
       title: applyScale(readSize("title")),
       subtitle: applyScale(readSize("subtitle")),
@@ -237,7 +245,7 @@ export const normalizeText = (key: string, value: string): string => {
   const role = styleRoleByKey(key);
   const base = cleanText(value);
 
-  if (kind === "bullets") {
+  if (kind === "bullets" || role === "bullets") {
     return toBullets(base);
   }
 
@@ -375,7 +383,9 @@ export const applyTypographyStandards = (params: {
       : (role === "title" ? params.themeTypography.colors.title : params.themeTypography.colors.body);
 
     touched += applyTextProps(element, {
-      fontFamily: params.themeTypography.fontFamily,
+      fontFamily: role === "title" || role === "subtitle"
+        ? params.themeTypography.displayFontFamily
+        : params.themeTypography.fontFamily,
       fontSize: params.themeTypography.sizes[role],
       lineHeight: params.themeTypography.lineHeights[role],
       color,
@@ -389,10 +399,49 @@ export const applyTypographyStandards = (params: {
   };
 };
 
-const charsCapacity = (w: number, h: number, fontSize: number, lineHeight: number): number => {
-  const charsPerLine = Math.max(12, Math.floor(w / (fontSize * 0.53)));
-  const maxLines = Math.max(1, Math.floor(h / (fontSize * lineHeight * 1.05)));
-  return charsPerLine * maxLines;
+type TextBoxCapacity = {
+  charsPerLine: number;
+  maxLines: number;
+  maxChars: number;
+};
+
+const textBoxCapacity = (w: number, h: number, fontSize: number, lineHeight: number): TextBoxCapacity => {
+  const charsPerLine = Math.max(10, Math.floor(w / (fontSize * 0.54)));
+  const maxLines = Math.max(1, Math.floor(h / (fontSize * lineHeight)));
+  return { charsPerLine, maxLines, maxChars: charsPerLine * maxLines };
+};
+
+const measuredWrappedLines = (text: string, width: number, style: TextMetricStyle): number => (
+  measureTextBlock(text, width, style).lineCount
+);
+
+const clipAtWordBoundary = (value: string, maxChars: number): string => {
+  if (value.length <= maxChars) return value;
+  const safeMax = Math.max(4, maxChars - 1);
+  const candidate = value.slice(0, safeMax + 1);
+  const sentenceEnd = Math.max(candidate.lastIndexOf("."), candidate.lastIndexOf("!"), candidate.lastIndexOf("?"));
+  if (sentenceEnd >= Math.floor(safeMax * 0.55)) return candidate.slice(0, sentenceEnd + 1).trimEnd();
+
+  const boundary = Math.max(candidate.lastIndexOf(" "), candidate.lastIndexOf("\u00A0"));
+  const clipped = (boundary >= Math.floor(safeMax * 0.62) ? candidate.slice(0, boundary) : candidate.slice(0, safeMax))
+    .replace(/[,:;\u2013\u2014-]+$/u, "")
+    .trimEnd();
+  return /[.!?]$/u.test(clipped) ? clipped : `${clipped}.`;
+};
+
+const shortenTextForBox = (text: string, capacity: TextBoxCapacity): string => {
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const bulletLike = lines.length > 1 || lines.some((line) => /^[-*•]\s*/.test(line));
+  if (!bulletLike) return clipAtWordBoundary(text, capacity.maxChars);
+
+  const keptLines = lines;
+  const linesPerItem = Math.max(1, Math.floor(capacity.maxLines / Math.max(1, keptLines.length)));
+  const itemBudget = Math.max(12, capacity.charsPerLine * linesPerItem);
+  return keptLines.map((line) => {
+    const bullet = /^[-*•]\s*/.test(line) ? "• " : "";
+    const body = line.replace(/^[-*•]\s*/, "").trim();
+    return `${bullet}${clipAtWordBoundary(body, Math.max(4, itemBudget - bullet.length))}`;
+  }).join("\n");
 };
 
 export const autoFitText = (params: {
@@ -411,8 +460,6 @@ export const autoFitText = (params: {
 
     const role = styleRoleByKey(target.key);
     const baseFontSize = params.themeTypography.sizes[role];
-    const minFontSize = role === "title" ? 30 : (role === "subtitle" ? 20 : 13);
-    const maxFontSize = baseFontSize;
 
     const text = typeof element.text === "string" ? element.text.trim() : "";
     if (!text) continue;
@@ -422,24 +469,30 @@ export const autoFitText = (params: {
     const lineHeight = readNum(toRecord(element.style)?.lineHeight) ?? params.themeTypography.lineHeights[role] ?? 1.15;
 
     const origFontSize = readNum(toRecord(element.style)?.fontSize) ?? baseFontSize;
-    let fontSize = Math.min(maxFontSize, Math.max(minFontSize, origFontSize));
-    let maxCharsEst = charsCapacity(width, height, fontSize, lineHeight);
-
-    let wasShrunk = false;
-    while (text.length > maxCharsEst && fontSize > minFontSize) {
-      fontSize -= role === "title" ? 2 : 1;
-      wasShrunk = true;
-      maxCharsEst = charsCapacity(width, height, fontSize, lineHeight);
-    }
+    const fontSize = baseFontSize;
+    const capacity = textBoxCapacity(width, height, fontSize, lineHeight);
+    const sourceStyle = toRecord(element.style);
+    const metricStyle: TextMetricStyle = {
+      fontFamily: typeof sourceStyle?.fontFamily === "string" ? sourceStyle.fontFamily : params.themeTypography.fontFamily,
+      fontSize,
+      fontWeight: typeof sourceStyle?.fontWeight === "string" || typeof sourceStyle?.fontWeight === "number" ? sourceStyle.fontWeight : undefined,
+      bold: sourceStyle?.bold === true,
+      lineHeight,
+      letterSpacing: readNum(sourceStyle?.letterSpacing) ?? 0,
+    };
+    const initialRequiredLines = measuredWrappedLines(text, width, metricStyle);
+    const initialOverflow = initialRequiredLines > capacity.maxLines;
 
     let nextText = text;
     let wasTruncated = false;
-    if (nextText.length > maxCharsEst && process.env.TEXT_FIT_TRUNCATE === "true") {
-      overflowCount += 1;
+    if (initialOverflow && role !== "title" && role !== "subtitle" && process.env.TEXT_FIT_SHORTEN === "true") {
       truncatedCount += 1;
       wasTruncated = true;
-      nextText = clip(nextText, maxCharsEst);
-    } else if (nextText.length > maxCharsEst) {
+      nextText = shortenTextForBox(nextText, capacity);
+    }
+    const requiredLines = measuredWrappedLines(nextText, width, metricStyle);
+    const overflowAfterFit = requiredLines > capacity.maxLines;
+    if (overflowAfterFit) {
       overflowCount += 1;
     }
 
@@ -458,8 +511,11 @@ export const autoFitText = (params: {
       origFontSize,
       finalFontSize: fontSize,
       textLen: text.length,
-      maxCharsEst,
-      wasShrunk,
+      maxCharsEst: capacity.maxChars,
+      requiredLines,
+      maxLines: capacity.maxLines,
+      overflowAfterFit,
+      wasShrunk: false,
       wasTruncated,
     });
   }
@@ -472,6 +528,35 @@ type LocalFallbackSlideContext = {
   claim?: string;
   mustInclude?: string[];
   expectedEvidence?: string[];
+};
+
+export const normalizeDocumentBulletMarkers = (root: unknown): number => {
+  const visited = new Set<object>();
+  let changed = 0;
+
+  const walk = (node: unknown): void => {
+    if (!node || typeof node !== "object" || visited.has(node as object)) return;
+    visited.add(node as object);
+
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+
+    const record = node as Record<string, unknown>;
+    if (typeof record.text === "string" && /•[\s\u200B\uFEFF]*•/u.test(record.text)) {
+      const next = record.text.replace(/•(?:[\s\u200B\uFEFF]*•)+[\s\u200B\uFEFF]*/gu, "• ");
+      if (next !== record.text) {
+        record.text = next;
+        changed += 1;
+      }
+    }
+
+    Object.values(record).forEach(walk);
+  };
+
+  walk(root);
+  return changed;
 };
 
 const uniqueFallbackCandidates = (values: Array<string | undefined>): string[] => {

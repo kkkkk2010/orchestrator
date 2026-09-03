@@ -9,3 +9,9 @@ pnpm-debug.log*
 
 layouts-local/**
 *.out.zip
+*.before-*
+*.sql
+*.dump
+*.bak
+*.backup
+ops-data/
